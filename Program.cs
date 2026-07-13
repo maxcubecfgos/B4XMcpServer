@@ -16,9 +16,12 @@ builder.Logging.AddConsole(options =>
 builder.Services
     .AddMcpServer()
     .WithStdioServerTransport()
+    .WithTools<LanguageTools>()
     .WithTools<DiagnosticsTools>()
     .WithTools<ProjectTools>()
     .WithTools<LayoutTools>()
-    .WithTools<DeviceTools>();
+    .WithTools<DeviceTools>()
+    .WithTools<GitTools>()
+    .WithTools<LibraryTools>();
 
 await builder.Build().RunAsync();

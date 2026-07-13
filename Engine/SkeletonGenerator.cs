@@ -56,15 +56,7 @@ namespace B4XContext.Engine
                 }
                 else
                 {
-                    if (node.Kind == "Process_Globals" || node.Kind == "Globals" || node.Kind == "Class_Globals")
-                    {
-                        var header = $"Sub {node.Kind.Replace('_', ' ')}";
-                        outLines.Add(header);
-                    }
-                    else
-                    {
-                        outLines.Add(headerLine);
-                    }
+                    outLines.Add(headerLine);
 
                     int bodyLineCount = Math.Max(0, (end - start + 1) - 2);
                     if (!string.IsNullOrEmpty(node.LeadingComment))

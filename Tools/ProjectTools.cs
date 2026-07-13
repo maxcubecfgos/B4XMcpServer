@@ -1,21 +1,28 @@
 ﻿using B4XContext.Engine;
 using B4XContext.Models;
 using B4XContext.Services;
+using B4XContext.Utils;
 using ModelContextProtocol.Server;
 using System;
+using System.Collections.Generic;
 using System.ComponentModel;
 using System.IO;
 using System.Linq;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using ContextFileMode = B4XContext.Models.FileMode;
-using System.Collections.Generic;
 
 namespace B4XMcpServer.Tools
 {
     [McpServerToolType]
     public sealed class ProjectTools
     {
+        // Clase auxiliar para cache de ValidateProject
+        private class CachedParseResult
+        {
+            public List<B4xParser.ParseIssue> Issues { get; set; } = new();
+        }
+
         [McpServerTool, Description("Returns the structure of a B4X project (B4A or B4J): the project root, the .b4a/.b4j/.b4i project file, and every module (.bas) and layout (.bal/.bjl/.bil) file found, ignoring build folders (Objects/bin/gen/obj). Accepts either the project folder path or the path to the .b4a/.b4j/.b4i file itself.")]
         public static string GetProjectStructure(
             [Description("Absolute path to the B4X project folder, or to its .b4a/.b4j/.b4i project file.")] string projectPath)
@@ -25,12 +32,7 @@ namespace B4XMcpServer.Tools
                 : ProjectScanner.FindProjectRoot(projectPath);
 
             if (root == null)
-            {
-                return JsonSerializer.Serialize(new
-                {
-                    error = $"Could not determine a B4X project root from '{projectPath}'. Pass either the project folder or its .b4a/.b4j/.b4i file."
-                });
-            }
+                throw new DirectoryNotFoundException($"Could not determine a B4X project root from '{projectPath}'. Pass either the project folder or its .b4a/.b4j/.b4i file.");
 
             var files = ProjectScanner.ScanProject(root);
             var projectFile = ProjectScanner.FindProjectFile(root);
@@ -51,20 +53,14 @@ namespace B4XMcpServer.Tools
             [Description("Absolute path to the file to read.")] string filePath)
         {
             if (!File.Exists(filePath))
-                return JsonSerializer.Serialize(new { error = $"File not found: {filePath}" });
+                throw new FileNotFoundException($"File not found: {filePath}");
 
-            try
-            {
-                var ext = Path.GetExtension(filePath).ToLowerInvariant();
-                string content = (ext == ".bas" || ext == ".b4a" || ext == ".b4j" || ext == ".b4i")
-                    ? CodeUtils.ReadTextSafely(filePath)
-                    : File.ReadAllText(filePath);
-                return content;
-            }
-            catch (Exception ex)
-            {
-                return JsonSerializer.Serialize(new { error = ex.Message });
-            }
+            var ext = Path.GetExtension(filePath).ToLowerInvariant();
+            string content = (ext == ".bas" || ext == ".b4a" || ext == ".b4j" || ext == ".b4i")
+                ? CodeUtils.ReadTextSafely(filePath)
+                : File.ReadAllText(filePath);
+
+            return content;
         }
 
         [McpServerTool, Description("Writes (overwrites) a file with the given content. This replaces the entire file, so read it first with get_file_content if you need to preserve parts of it. Typically used to save an edited B4X module back to disk.")]
@@ -72,64 +68,64 @@ namespace B4XMcpServer.Tools
             [Description("Absolute path to the file to write.")] string filePath,
             [Description("The full new content of the file.")] string content)
         {
-            try
+            File.WriteAllText(filePath, content);
+            CacheManager.Invalidate(filePath);
+            return JsonSerializer.Serialize(new
             {
-                File.WriteAllText(filePath, content);
-                return JsonSerializer.Serialize(new
-                {
-                    success = true,
-                    path = filePath,
-                    bytesWritten = System.Text.Encoding.UTF8.GetByteCount(content)
-                });
-            }
-            catch (Exception ex)
-            {
-                return JsonSerializer.Serialize(new { success = false, error = ex.Message });
-            }
+                success = true,
+                path = filePath,
+                bytesWritten = System.Text.Encoding.UTF8.GetByteCount(content)
+            });
         }
 
-        [McpServerTool, Description("Compiles a B4X project (B4A or B4J) using the local B4ABuilder.exe/B4JBuilder.exe and returns structured results: success or failure, and if it failed, the list of errors (module name, line number, source line, and message). The correct builder is chosen automatically from the project's file extension (.b4a vs .b4j) — this never mixes up B4A/B4J builders.")]
+        [McpServerTool, Description("Compiles a B4X project (B4A, B4J, or B4i) using the platform-correct builder selected automatically from the project file extension. Returns structured results: success or failure with detailed errors.\n\n" +
+            "*** CRITICAL: This tool is the ONLY supported way to compile. NEVER invoke the builder executable directly via shell, terminal, or PowerShell. If compilation fails, read the structured errors returned here, fix the source files, and call compile_project again. ***")]
         public static string CompileProject(
             [Description("Absolute path to the B4X project folder, or to its .b4a/.b4j project file.")] string projectPath,
-            [Description("Timeout in seconds. Android/JavaFX builds can take a couple of minutes, especially the first build. Default 300.")] int timeoutSeconds = 300)
+            [Description("Timeout in seconds. Default 300.")] int timeoutSeconds = 300)
         {
             string? projectFile = File.Exists(projectPath) ? projectPath : ProjectScanner.FindProjectFile(projectPath);
             if (projectFile == null)
-            {
-                return JsonSerializer.Serialize(new
-                {
-                    success = false,
-                    error = $"No .b4a/.b4j/.b4i project file found for '{projectPath}'."
-                });
-            }
+                throw new FileNotFoundException($"No .b4a/.b4j/.b4i project file found for '{projectPath}'.");
 
             var builderPath = BuilderLocator.LocateBuilder(projectFile);
             if (builderPath == null)
+                throw new FileNotFoundException("Could not locate the matching builder for this project. Add a b4x_context_config.json with \"builder_path\" next to the project file.");
+
+            var buildResult = BuilderRunner.RunBuild(builderPath, projectFile, timeoutSeconds);
+
+            bool success = buildResult.TryGetValue("success", out var s) && s is bool sb && sb;
+
+            if (buildResult.TryGetValue("fatal_error", out var fatal) && fatal != null)
             {
                 return JsonSerializer.Serialize(new
                 {
                     success = false,
-                    error = "Could not locate the matching B4ABuilder.exe/B4JBuilder.exe for this project. " +
-                             "Add a b4x_context_config.json with \"builder_path\" next to the project file, " +
-                             "or confirm it's installed under the standard Anywhere Software folder."
-                });
+                    fatal_error = fatal.ToString(),
+                    hint = "The builder process itself failed. Check that the builder path is correct, Java is installed, and the project file is valid. Do NOT try to run the builder manually — it requires environment setup that only this tool provides."
+                }, new JsonSerializerOptions { WriteIndented = true });
             }
 
-            var buildResult = BuilderRunner.RunBuild(builderPath, projectFile, timeoutSeconds);
-
-            if (buildResult.TryGetValue("fatal_error", out var fatal) && fatal != null)
+            if (!success)
             {
-                return JsonSerializer.Serialize(new { success = false, error = fatal.ToString() });
+                var formattedErrors = BuildFormatter.Format(buildResult);
+                return JsonSerializer.Serialize(new
+                {
+                    success = false,
+                    compilation_errors = formattedErrors,
+                    hint = "DO NOT run shell commands like dir, cd, cat, or try to invoke the builder manually. Follow this cycle:\n" +
+                           "1. Read the compilation_errors above carefully — they tell you exact file, line, and error message\n" +
+                           "2. Use write_file or edit_sub to fix ONLY the specific errors reported\n" +
+                           "3. Call compile_project again\n" +
+                           "4. Repeat until success=true"
+                }, new JsonSerializerOptions { WriteIndented = true });
             }
-
-            bool success = buildResult.TryGetValue("success", out var s) && s is bool sb && sb;
-            var formattedErrors = success ? null : BuildFormatter.Format(buildResult);
 
             return JsonSerializer.Serialize(new
             {
-                success,
+                success = true,
                 builderUsed = builderPath,
-                errors = formattedErrors
+                message = "Compilation successful. No errors."
             }, new JsonSerializerOptions { WriteIndented = true });
         }
 
@@ -138,18 +134,11 @@ namespace B4XMcpServer.Tools
             [Description("Absolute path to the .bal or .bjl layout file.")] string layoutPath)
         {
             if (!File.Exists(layoutPath))
-                return JsonSerializer.Serialize(new { error = $"Layout file not found: {layoutPath}" });
+                throw new FileNotFoundException($"Layout file not found: {layoutPath}");
 
-            try
-            {
-                var data = File.ReadAllBytes(layoutPath);
-                var decoded = BalDecoder.Decode(data);
-                return decoded; // ya viene como JSON serializado
-            }
-            catch (Exception ex)
-            {
-                return JsonSerializer.Serialize(new { error = ex.Message });
-            }
+            var data = File.ReadAllBytes(layoutPath);
+            var decoded = BalDecoder.Decode(data);
+            return decoded;
         }
 
         public sealed class GetFullContextRequest
@@ -181,12 +170,7 @@ namespace B4XMcpServer.Tools
 
             string? root = Directory.Exists(projectPath) ? projectPath : ProjectScanner.FindProjectRoot(projectPath);
             if (root == null)
-            {
-                return JsonSerializer.Serialize(new
-                {
-                    error = $"Could not determine a B4X project root from '{projectPath}'."
-                });
-            }
+                throw new DirectoryNotFoundException($"Could not determine a B4X project root from '{projectPath}'.");
 
             var scanned = ProjectScanner.ScanProject(root);
             var projectFiles = scanned.Select(f =>
@@ -211,7 +195,7 @@ namespace B4XMcpServer.Tools
                         bool fatal = buildResult.TryGetValue("fatal_error", out var f2) && f2 != null;
                         if (!fatal)
                         {
-                            bool success = buildResult.TryGetValue("success", out var s) && s is bool sb && sb;
+                            bool success = buildResult.TryGetValue("success", out var s2) && s2 is bool sb2 && sb2;
                             if (!success) compileErrorsBlock = BuildFormatter.Format(buildResult);
                         }
                         else
@@ -235,6 +219,7 @@ namespace B4XMcpServer.Tools
 
             return bundle;
         }
+
         public sealed class EditSubRequest
         {
             [Description("Absolute path to the .bas/.b4a/.b4j module file.")]
@@ -255,23 +240,10 @@ namespace B4XMcpServer.Tools
             var newCode = request.NewCode;
 
             if (!File.Exists(filePath))
-                return JsonSerializer.Serialize(new { success = false, error = $"File not found: {filePath}" });
+                throw new FileNotFoundException($"File not found: {filePath}");
 
-            string raw;
-            try
-            {
-                raw = File.ReadAllText(filePath);
-            }
-            catch (Exception ex)
-            {
-                return JsonSerializer.Serialize(new { success = false, error = $"Could not read file: {ex.Message}" });
-            }
+            string raw = File.ReadAllText(filePath);
 
-            // IMPORTANTE: leemos el archivo crudo (con su encabezado de metadata del
-            // IDE) en vez de usar CodeUtils.ReadTextSafely, que lo recorta. Si
-            // escribieramos de vuelta sin ese encabezado, el IDE de B4X dejaria de
-            // reconocer el archivo. Lo separamos, editamos solo la parte de codigo,
-            // y lo volvemos a unir antes de guardar.
             const string marker = "@EndOfDesignText@";
             int markerIdx = raw.IndexOf(marker, StringComparison.Ordinal);
             string header = markerIdx >= 0 ? raw.Substring(0, markerIdx + marker.Length) : string.Empty;
@@ -292,7 +264,7 @@ namespace B4XMcpServer.Tools
                     success = false,
                     error = $"Sub '{subName}' not found in {Path.GetFileName(filePath)}.",
                     availableSubs = available
-                });
+                }, new JsonSerializerOptions { WriteIndented = true });
             }
 
             var lines = codeSection.Replace("\r\n", "\n").Split('\n').ToList();
@@ -300,13 +272,11 @@ namespace B4XMcpServer.Tools
             int endIdx = target.EndLine.Value - 1;
 
             if (startIdx < 0 || endIdx >= lines.Count || startIdx > endIdx)
-            {
                 return JsonSerializer.Serialize(new
                 {
                     success = false,
                     error = "Internal error: Sub line range out of bounds after parsing."
-                });
-            }
+                }, new JsonSerializerOptions { WriteIndented = true });
 
             var newLines = newCode.Replace("\r\n", "\n").TrimEnd('\n').Split('\n');
             lines.RemoveRange(startIdx, endIdx - startIdx + 1);
@@ -315,14 +285,8 @@ namespace B4XMcpServer.Tools
             var updatedCodeSection = string.Join("\n", lines);
             var finalContent = markerIdx >= 0 ? header + "\r\n" + updatedCodeSection : updatedCodeSection;
 
-            try
-            {
-                File.WriteAllText(filePath, finalContent);
-            }
-            catch (Exception ex)
-            {
-                return JsonSerializer.Serialize(new { success = false, error = $"Could not write file: {ex.Message}" });
-            }
+            File.WriteAllText(filePath, finalContent);
+            CacheManager.Invalidate(filePath);
 
             return JsonSerializer.Serialize(new
             {
@@ -333,6 +297,7 @@ namespace B4XMcpServer.Tools
                 newLineCount = newLines.Length
             });
         }
+
         public sealed class SearchCodeRequest
         {
             [Description("Absolute path to the B4X project folder, or to its .b4a/.b4j project file.")]
@@ -355,21 +320,13 @@ namespace B4XMcpServer.Tools
             var pattern = request.Pattern;
 
             if (string.IsNullOrWhiteSpace(pattern))
-                return JsonSerializer.Serialize(new { error = "Pattern must not be empty." });
+                throw new ArgumentException("Pattern must not be empty.");
 
             string? root = Directory.Exists(projectPath) ? projectPath : ProjectScanner.FindProjectRoot(projectPath);
             if (root == null)
-                return JsonSerializer.Serialize(new { error = $"Could not determine a B4X project root from '{projectPath}'." });
+                throw new DirectoryNotFoundException($"Could not determine a B4X project root from '{projectPath}'.");
 
-            Regex regex;
-            try
-            {
-                regex = new Regex(pattern, RegexOptions.IgnoreCase);
-            }
-            catch (Exception ex)
-            {
-                return JsonSerializer.Serialize(new { error = $"Invalid regex pattern: {ex.Message}" });
-            }
+            var regex = new Regex(pattern, RegexOptions.IgnoreCase);
 
             var files = ProjectScanner.ScanProject(root)
                 .Where(f => f.Kind == "bas" || (request.IncludeProjectFile && (f.Kind == "b4a" || f.Kind == "b4j" || f.Kind == "b4i")))
@@ -412,17 +369,9 @@ namespace B4XMcpServer.Tools
         {
             string? projectFile = File.Exists(projectPath) ? projectPath : ProjectScanner.FindProjectFile(projectPath);
             if (projectFile == null)
-                return JsonSerializer.Serialize(new { error = $"No .b4a/.b4j/.b4i project file found for '{projectPath}'." });
+                throw new FileNotFoundException($"No .b4a/.b4j/.b4i project file found for '{projectPath}'.");
 
-            string raw;
-            try
-            {
-                raw = File.ReadAllText(projectFile);
-            }
-            catch (Exception ex)
-            {
-                return JsonSerializer.Serialize(new { error = ex.Message });
-            }
+            string raw = File.ReadAllText(projectFile);
 
             const string marker = "@EndOfDesignText@";
             int markerIdx = raw.IndexOf(marker, StringComparison.Ordinal);
@@ -458,17 +407,20 @@ namespace B4XMcpServer.Tools
 
             return JsonSerializer.Serialize(result, new JsonSerializerOptions { WriteIndented = true });
         }
+
         [McpServerTool, Description("Analyzes a single B4X module (.bas) without needing its full content read separately: lists every Sub (name, parameters, return type, public/private, and whether it looks like an event handler by naming convention e.g. Btn_Click), every Type declaration, and whether Process_Globals/Globals/Class_Globals are present. Also reports any structural parse issues (unclosed blocks, mismatched Type/End Type, etc.) found without compiling.")]
         public static string AnalyzeModule(
             [Description("Absolute path to the .bas module file.")] string filePath)
         {
             if (!File.Exists(filePath))
-                return JsonSerializer.Serialize(new { error = $"File not found: {filePath}" });
+                throw new FileNotFoundException($"File not found: {filePath}");
 
-            string source;
-            try { source = CodeUtils.ReadTextSafely(filePath); }
-            catch (Exception ex) { return JsonSerializer.Serialize(new { error = ex.Message }); }
+            // Try cache first
+            string cacheKey = $"analyze:{filePath}";
+            if (CacheManager.TryGetByMtime<string>(filePath, out var cached) && cached != null)
+                return cached;
 
+            string source = CodeUtils.ReadTextSafely(filePath);
             var (root, issues) = B4xParser.Parse(source);
             var nodes = B4xParser.FlattenSubsAndTypes(root);
 
@@ -478,7 +430,9 @@ namespace B4XMcpServer.Tools
                 parameters = n.Params,
                 returnType = n.ReturnType,
                 isPrivate = n.IsPrivate,
-                looksLikeEventHandler = Regex.IsMatch(n.Name, @"_(Click|Create|Resume|Pause|CheckedChange|TextChanged|Tick|JobDone|Complete|ItemClick|LongClick|FocusChanged)$", RegexOptions.IgnoreCase),
+                looksLikeEventHandler = Regex.IsMatch(n.Name,
+                    @"_(Click|Create|Resume|Pause|CheckedChange|TextChanged|Tick|JobDone|Complete|ItemClick|LongClick|FocusChanged)$",
+                    RegexOptions.IgnoreCase),
                 startLine = n.StartLine,
                 endLine = n.EndLine
             }).ToList();
@@ -486,7 +440,7 @@ namespace B4XMcpServer.Tools
             var types = nodes.Where(n => n.Kind == "Type")
                 .Select(n => new { name = n.Name, startLine = n.StartLine, endLine = n.EndLine }).ToList();
 
-            var result = new
+            var result = JsonSerializer.Serialize(new
             {
                 filePath,
                 hasProcessGlobals = nodes.Any(n => n.Kind == "Process_Globals"),
@@ -496,9 +450,13 @@ namespace B4XMcpServer.Tools
                 subs,
                 types,
                 parseIssues = issues.Select(i => new { line = i.Line, message = i.Message, severity = i.Severity })
-            };
+            }, new JsonSerializerOptions { WriteIndented = true });
 
-            return JsonSerializer.Serialize(result, new JsonSerializerOptions { WriteIndented = true });
+            // Cache it
+            CacheManager.SetByMtime(filePath, result);
+            CacheManager.Store(cacheKey, result);
+
+            return result;
         }
 
         [McpServerTool, Description("Runs the B4X structural parser against every module (.bas) in a project WITHOUT compiling, and reports any structural problems found (unclosed Sub/Type/Region blocks, mismatched End statements). This is near-instant compared to a real compile — use it as a quick sanity check before compile_project, or right after generating/editing code to catch obvious mistakes early.")]
@@ -507,7 +465,7 @@ namespace B4XMcpServer.Tools
         {
             string? root = Directory.Exists(projectPath) ? projectPath : ProjectScanner.FindProjectRoot(projectPath);
             if (root == null)
-                return JsonSerializer.Serialize(new { error = $"Could not determine a B4X project root from '{projectPath}'." });
+                throw new DirectoryNotFoundException($"Could not determine a B4X project root from '{projectPath}'.");
 
             var basFiles = ProjectScanner.ScanProject(root).Where(f => f.Kind == "bas").ToList();
 
@@ -515,6 +473,21 @@ namespace B4XMcpServer.Tools
             int totalIssues = 0;
             foreach (var f in basFiles)
             {
+                // Try cache first
+                if (CacheManager.TryGetByMtime<CachedParseResult>(f.Path, out var cached) && cached != null)
+                {
+                    if (cached.Issues.Count > 0)
+                    {
+                        totalIssues += cached.Issues.Count;
+                        results.Add(new
+                        {
+                            file = f.Path,
+                            issues = cached.Issues.Select(i => new { line = i.Line, message = i.Message, severity = i.Severity })
+                        });
+                    }
+                    continue;
+                }
+
                 string source;
                 try { source = CodeUtils.ReadTextSafely(f.Path); }
                 catch (Exception ex)
@@ -524,6 +497,8 @@ namespace B4XMcpServer.Tools
                 }
 
                 var (_, issues) = B4xParser.Parse(source);
+                CacheManager.SetByMtime(f.Path, new CachedParseResult { Issues = issues });
+
                 if (issues.Count > 0)
                 {
                     totalIssues += issues.Count;
@@ -550,7 +525,7 @@ namespace B4XMcpServer.Tools
         {
             string? root = Directory.Exists(projectPath) ? projectPath : ProjectScanner.FindProjectRoot(projectPath);
             if (root == null)
-                return JsonSerializer.Serialize(new { error = $"Could not determine a B4X project root from '{projectPath}'." });
+                throw new DirectoryNotFoundException($"Could not determine a B4X project root from '{projectPath}'.");
 
             var layoutFiles = ProjectScanner.ScanProject(root)
                 .Where(f => f.Kind == "bal" || f.Kind == "bjl" || f.Kind == "bil").ToList();
@@ -591,6 +566,7 @@ namespace B4XMcpServer.Tools
             return JsonSerializer.Serialize(new { layoutCount = results.Count, layouts = results },
                 new JsonSerializerOptions { WriteIndented = true });
         }
+
         private const string ManifestStartMarker = "#Region Manifest Editor";
         private const string ManifestEndMarker = "#End Region";
 
@@ -599,17 +575,15 @@ namespace B4XMcpServer.Tools
             [Description("Absolute path to the .b4a project file.")] string projectPath)
         {
             if (!File.Exists(projectPath))
-                return JsonSerializer.Serialize(new { error = $"File not found: {projectPath}" });
+                throw new FileNotFoundException($"File not found: {projectPath}");
             if (!projectPath.EndsWith(".b4a", StringComparison.OrdinalIgnoreCase))
-                return JsonSerializer.Serialize(new { error = "File must have a .b4a extension." });
+                throw new ArgumentException("File must have a .b4a extension.");
 
-            string raw;
-            try { raw = File.ReadAllText(projectPath); }
-            catch (Exception ex) { return JsonSerializer.Serialize(new { error = ex.Message }); }
+            string raw = File.ReadAllText(projectPath);
 
             var block = ExtractManifestBlock(raw);
             if (block == null)
-                return JsonSerializer.Serialize(new { error = "No 'Manifest Editor' region found in this project." });
+                throw new InvalidOperationException("No 'Manifest Editor' region found in this project.");
 
             return JsonSerializer.Serialize(new { projectPath, manifest = block });
         }
@@ -620,43 +594,27 @@ namespace B4XMcpServer.Tools
             [Description("New content for the lines between '#Region Manifest Editor' and '#End Region' (without the markers themselves).")] string manifestContent)
         {
             if (!File.Exists(projectPath))
-                return JsonSerializer.Serialize(new { success = false, error = $"File not found: {projectPath}" });
+                throw new FileNotFoundException($"File not found: {projectPath}");
             if (!projectPath.EndsWith(".b4a", StringComparison.OrdinalIgnoreCase))
-                return JsonSerializer.Serialize(new { success = false, error = "File must have a .b4a extension." });
+                throw new ArgumentException("File must have a .b4a extension.");
 
-            string raw;
-            try { raw = File.ReadAllText(projectPath); }
-            catch (Exception ex) { return JsonSerializer.Serialize(new { success = false, error = ex.Message }); }
+            string raw = File.ReadAllText(projectPath);
 
             int startIdx = raw.IndexOf(ManifestStartMarker, StringComparison.Ordinal);
             if (startIdx < 0)
-                return JsonSerializer.Serialize(new { success = false, error = "No 'Manifest Editor' region found in this project." });
+                throw new InvalidOperationException("No 'Manifest Editor' region found in this project.");
 
             int endIdx = raw.IndexOf(ManifestEndMarker, startIdx, StringComparison.Ordinal);
             if (endIdx < 0)
-                return JsonSerializer.Serialize(new { success = false, error = "Found '#Region Manifest Editor' but no matching '#End Region'." });
+                throw new InvalidOperationException("Found '#Region Manifest Editor' but no matching '#End Region'.");
 
-            try
-            {
-                File.Copy(projectPath, projectPath + ".bak", overwrite: true);
-            }
-            catch (Exception ex)
-            {
-                return JsonSerializer.Serialize(new { success = false, error = $"Could not create backup: {ex.Message}" });
-            }
+            File.Copy(projectPath, projectPath + ".bak", overwrite: true);
 
             var before = raw.Substring(0, startIdx + ManifestStartMarker.Length);
             var after = raw.Substring(endIdx);
             var newContent = before + "\r\n" + manifestContent.TrimEnd('\r', '\n') + "\r\n" + after;
 
-            try
-            {
-                File.WriteAllText(projectPath, newContent);
-            }
-            catch (Exception ex)
-            {
-                return JsonSerializer.Serialize(new { success = false, error = $"Could not write file: {ex.Message}" });
-            }
+            File.WriteAllText(projectPath, newContent);
 
             return JsonSerializer.Serialize(new { success = true, projectPath, backup = projectPath + ".bak" });
         }

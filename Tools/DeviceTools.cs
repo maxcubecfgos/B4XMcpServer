@@ -1,4 +1,5 @@
 ﻿using ModelContextProtocol.Server;
+using System;
 using System.ComponentModel;
 using System.Diagnostics;
 using System.Text;
@@ -15,7 +16,7 @@ namespace B4XMcpServer.Tools
         {
             var adb = AdbLocator.LocateAdb();
             if (adb == null)
-                return JsonSerializer.Serialize(new { error = "adb.exe not found. Set ANDROID_HOME or ANDROID_SDK_ROOT, or install the Android SDK platform-tools." });
+                throw new Exception("adb.exe not found. Set ANDROID_HOME or ANDROID_SDK_ROOT, or install the Android SDK platform-tools.");
 
             var (output, _) = RunAdb(adb, "devices -l");
             return JsonSerializer.Serialize(new { raw = output });
@@ -28,7 +29,7 @@ namespace B4XMcpServer.Tools
         {
             var adb = AdbLocator.LocateAdb();
             if (adb == null)
-                return JsonSerializer.Serialize(new { error = "adb.exe not found. Set ANDROID_HOME or ANDROID_SDK_ROOT, or install the Android SDK platform-tools." });
+                throw new Exception("adb.exe not found. Set ANDROID_HOME or ANDROID_SDK_ROOT, or install the Android SDK platform-tools.");
 
             var deviceArg = string.IsNullOrEmpty(deviceSerial) ? "" : $"-s {deviceSerial} ";
             var (output, _) = RunAdb(adb, $"{deviceArg}logcat -d -t {lines} -s B4A:V");
@@ -48,7 +49,7 @@ namespace B4XMcpServer.Tools
             };
 
             using var proc = Process.Start(psi);
-            if (proc == null) return ("Failed to start adb.exe", -1);
+            if (proc == null) throw new Exception("Failed to start adb.exe process.");
 
             var sb = new StringBuilder();
             sb.Append(proc.StandardOutput.ReadToEnd());

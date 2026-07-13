@@ -55,6 +55,7 @@ namespace B4XContext.Services
             }
 
             // Check config override (must match expected builder if we know the project type)
+            // Check config override (must match expected builder if we know the project type)
             try
             {
                 var cfg = Path.Combine(projectDir ?? ".", "b4x_context_config.json");
@@ -71,10 +72,13 @@ namespace B4XContext.Services
                             {
                                 if (path.EndsWith(expectedBuilderName, StringComparison.OrdinalIgnoreCase))
                                     return path;
-                                // Config override does not match expected builder for this project type -> treat as not found
-                                return null;
+                                // Config override does not match expected builder.
+                                // Fall through to common paths search below instead of failing immediately.
                             }
-                            return path;
+                            else
+                            {
+                                return path;
+                            }
                         }
                     }
                 }

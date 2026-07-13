@@ -115,9 +115,6 @@ namespace B4XContext.Engine
 
             WriteMap(tw, data, cache);
 
-            WriteString(tw, "");
-            tw.Write(ENDOFMAP);
-
             WriteStringsCache(bw, cache);
             temp.Position = 0;
             temp.CopyTo(bw.BaseStream);

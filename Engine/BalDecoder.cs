@@ -20,7 +20,6 @@ namespace B4XContext.Engine
         public const byte RECT32 = 11;
         public const byte CNULL = 12;
 
-        private static readonly ByteConverter ByteConverter = new ByteConverter { LittleEndian = true };
 
         public static string Decode(byte[] data)
         {
@@ -115,8 +114,7 @@ namespace B4XContext.Engine
             int scriptLength = br.ReadInt32();
             byte[] rawData = br.ReadBytes(scriptLength);
 
-            var cs = new CompressedStreams();
-            byte[] decompressed = cs.DecompressBytes(rawData, "gzip");
+            byte[] decompressed = DecompressGZip(rawData);
 
             using var scriptMs = new MemoryStream(decompressed);
             using var scriptBr = new BinaryReader(scriptMs, Encoding.UTF8);
@@ -282,6 +280,14 @@ namespace B4XContext.Engine
 
             return props;
         }
+        private static byte[] DecompressGZip(byte[] data)
+        {
+            using var ms = new MemoryStream(data);
+            using var gzip = new GZipStream(ms, CompressionMode.Decompress);
+            using var outMs = new MemoryStream();
+            gzip.CopyTo(outMs);
+            return outMs.ToArray();
+        }
     }
 
     public class ByteConverter
@@ -338,18 +344,5 @@ namespace B4XContext.Engine
         }
     }
 
-    internal class CompressedStreams
-    {
-        public byte[] DecompressBytes(byte[] data, string algorithm)
-        {
-            if (algorithm != "gzip")
-                throw new ArgumentException("Only gzip supported");
 
-            using var ms = new MemoryStream(data);
-            using var gzip = new GZipStream(ms, CompressionMode.Decompress);
-            using var outMs = new MemoryStream();
-            gzip.CopyTo(outMs);
-            return outMs.ToArray();
-        }
-    }
 }
