@@ -17,6 +17,8 @@ builder.Services
     .AddMcpServer()
     .WithStdioServerTransport()
     .WithTools<DiagnosticsTools>()
-    .WithTools<ProjectTools>();
+    .WithTools<ProjectTools>()
+    .WithTools<LayoutTools>()
+    .WithTools<DeviceTools>();
 
 await builder.Build().RunAsync();

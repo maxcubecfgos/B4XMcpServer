@@ -1,0 +1,71 @@
+## ---------------------------------------------------------------------------
+## Archivos compilados y resultados de Build
+## ---------------------------------------------------------------------------
+bin/
+obj/
+Log/
+Logs/
+Debug/
+Release/
+Releases/
+x64/
+x86/
+[Aa][Rr][Mm]/
+[Aa][Rr][Mm]64/
+bld/
+[Bb]uild/
+core/
+*.il
+
+## ---------------------------------------------------------------------------
+## Visual Studio y configuraciones de usuario locales
+## ---------------------------------------------------------------------------
+.vs/
+*.user
+*.userosscache
+*.sln.docstates
+*.suo
+*.vssscc
+*.dotCover
+
+## ---------------------------------------------------------------------------
+## Paquetes NuGet y dependencias
+## ---------------------------------------------------------------------------
+*.nupkg
+*.snupkg
+**/packages/
+*.nuget.props
+*.nuget.targets
+out/
+project.lock.json
+project.assets.json
+
+## ---------------------------------------------------------------------------
+## JetBrains Rider / ReSharper
+## ---------------------------------------------------------------------------
+.idea/
+*.sln.iml
+_ReSharper*/
+*.[Rr]e[Ss]harper
+*.DotSettings.user
+
+## ---------------------------------------------------------------------------
+## Resultados de Pruebas (Testing) y Cobertura
+## ---------------------------------------------------------------------------
+[Tt]est[Rr]esult*/
+[Bb]uild[Ll]og.*
+*.[Pp]ublish.xml
+*.pfx
+*.publishsettings
+CoverageLog*
+
+## ---------------------------------------------------------------------------
+## Archivos generados por el Sistema Operativo
+## ---------------------------------------------------------------------------
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db

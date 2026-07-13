@@ -143,7 +143,7 @@ namespace B4XMcpServer.Tools
             try
             {
                 var data = File.ReadAllBytes(layoutPath);
-                var decoded = BalDecoder.Decode(data, full: true);
+                var decoded = BalDecoder.Decode(data);
                 return decoded; // ya viene como JSON serializado
             }
             catch (Exception ex)
@@ -561,7 +561,7 @@ namespace B4XMcpServer.Tools
                 try
                 {
                     var data = File.ReadAllBytes(f.Path);
-                    var decodedJson = BalDecoder.Decode(data, full: true);
+                    var decodedJson = BalDecoder.Decode(data);
                     using var doc = JsonDocument.Parse(decodedJson);
                     var rootEl = doc.RootElement;
 
@@ -590,6 +590,85 @@ namespace B4XMcpServer.Tools
 
             return JsonSerializer.Serialize(new { layoutCount = results.Count, layouts = results },
                 new JsonSerializerOptions { WriteIndented = true });
+        }
+        private const string ManifestStartMarker = "#Region Manifest Editor";
+        private const string ManifestEndMarker = "#End Region";
+
+        [McpServerTool, Description("Extracts the Manifest Editor block from a B4A project file (the #Region Manifest Editor ... #End Region section that controls AndroidManifest.xml generation — permissions, features, SDK versions, etc.).")]
+        public static string GetManifest(
+            [Description("Absolute path to the .b4a project file.")] string projectPath)
+        {
+            if (!File.Exists(projectPath))
+                return JsonSerializer.Serialize(new { error = $"File not found: {projectPath}" });
+            if (!projectPath.EndsWith(".b4a", StringComparison.OrdinalIgnoreCase))
+                return JsonSerializer.Serialize(new { error = "File must have a .b4a extension." });
+
+            string raw;
+            try { raw = File.ReadAllText(projectPath); }
+            catch (Exception ex) { return JsonSerializer.Serialize(new { error = ex.Message }); }
+
+            var block = ExtractManifestBlock(raw);
+            if (block == null)
+                return JsonSerializer.Serialize(new { error = "No 'Manifest Editor' region found in this project." });
+
+            return JsonSerializer.Serialize(new { projectPath, manifest = block });
+        }
+
+        [McpServerTool, Description("Replaces the Manifest Editor block in a B4A project file. Creates a .bak backup of the original file first, so it's always recoverable.")]
+        public static string WriteManifest(
+            [Description("Absolute path to the .b4a project file.")] string projectPath,
+            [Description("New content for the lines between '#Region Manifest Editor' and '#End Region' (without the markers themselves).")] string manifestContent)
+        {
+            if (!File.Exists(projectPath))
+                return JsonSerializer.Serialize(new { success = false, error = $"File not found: {projectPath}" });
+            if (!projectPath.EndsWith(".b4a", StringComparison.OrdinalIgnoreCase))
+                return JsonSerializer.Serialize(new { success = false, error = "File must have a .b4a extension." });
+
+            string raw;
+            try { raw = File.ReadAllText(projectPath); }
+            catch (Exception ex) { return JsonSerializer.Serialize(new { success = false, error = ex.Message }); }
+
+            int startIdx = raw.IndexOf(ManifestStartMarker, StringComparison.Ordinal);
+            if (startIdx < 0)
+                return JsonSerializer.Serialize(new { success = false, error = "No 'Manifest Editor' region found in this project." });
+
+            int endIdx = raw.IndexOf(ManifestEndMarker, startIdx, StringComparison.Ordinal);
+            if (endIdx < 0)
+                return JsonSerializer.Serialize(new { success = false, error = "Found '#Region Manifest Editor' but no matching '#End Region'." });
+
+            try
+            {
+                File.Copy(projectPath, projectPath + ".bak", overwrite: true);
+            }
+            catch (Exception ex)
+            {
+                return JsonSerializer.Serialize(new { success = false, error = $"Could not create backup: {ex.Message}" });
+            }
+
+            var before = raw.Substring(0, startIdx + ManifestStartMarker.Length);
+            var after = raw.Substring(endIdx);
+            var newContent = before + "\r\n" + manifestContent.TrimEnd('\r', '\n') + "\r\n" + after;
+
+            try
+            {
+                File.WriteAllText(projectPath, newContent);
+            }
+            catch (Exception ex)
+            {
+                return JsonSerializer.Serialize(new { success = false, error = $"Could not write file: {ex.Message}" });
+            }
+
+            return JsonSerializer.Serialize(new { success = true, projectPath, backup = projectPath + ".bak" });
+        }
+
+        private static string? ExtractManifestBlock(string raw)
+        {
+            int startIdx = raw.IndexOf(ManifestStartMarker, StringComparison.Ordinal);
+            if (startIdx < 0) return null;
+            int contentStart = startIdx + ManifestStartMarker.Length;
+            int endIdx = raw.IndexOf(ManifestEndMarker, contentStart, StringComparison.Ordinal);
+            if (endIdx < 0) return null;
+            return raw.Substring(contentStart, endIdx - contentStart).Trim('\r', '\n');
         }
     }
 }
