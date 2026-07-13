@@ -78,55 +78,42 @@ namespace B4XMcpServer.Tools
             });
         }
 
-        [McpServerTool, Description("Compiles a B4X project (B4A, B4J, or B4i) using the platform-correct builder selected automatically from the project file extension. Returns structured results: success or failure with detailed errors.\n\n" +
-            "*** CRITICAL: This tool is the ONLY supported way to compile. NEVER invoke the builder executable directly via shell, terminal, or PowerShell. If compilation fails, read the structured errors returned here, fix the source files, and call compile_project again. ***")]
+        [McpServerTool, Description("Compiles a B4X project (B4A, B4J, or B4i) using the platform-correct builder selected automatically from the project file extension.\n\n" +
+     "*** CRITICAL: This is the ONLY way to compile. NEVER run shell commands (dir, cd, type, cat, B4ABuilder.exe, etc.). If compilation fails, this tool returns the exact errors with file names, line numbers, and source lines. READ THEM and fix the code — do not try to debug by running commands manually. ***")]
         public static string CompileProject(
-            [Description("Absolute path to the B4X project folder, or to its .b4a/.b4j project file.")] string projectPath,
-            [Description("Timeout in seconds. Default 300.")] int timeoutSeconds = 300)
+     [Description("Absolute path to the B4X project folder, or to its .b4a/.b4j project file.")] string projectPath,
+     [Description("Timeout in seconds. Default 300.")] int timeoutSeconds = 300)
         {
             string? projectFile = File.Exists(projectPath) ? projectPath : ProjectScanner.FindProjectFile(projectPath);
             if (projectFile == null)
-                throw new FileNotFoundException($"No .b4a/.b4j/.b4i project file found for '{projectPath}'.");
+                return $"❌ ERROR: No .b4a/.b4j/.b4i project file found for '{projectPath}'.";
 
             var builderPath = BuilderLocator.LocateBuilder(projectFile);
             if (builderPath == null)
-                throw new FileNotFoundException("Could not locate the matching builder for this project. Add a b4x_context_config.json with \"builder_path\" next to the project file.");
+                return $"❌ ERROR: Could not locate the matching builder. Create b4x_context_config.json with \"builder_path\" next to the project file.";
 
             var buildResult = BuilderRunner.RunBuild(builderPath, projectFile, timeoutSeconds);
 
-            bool success = buildResult.TryGetValue("success", out var s) && s is bool sb && sb;
-
+            // Fatal error (builder didn't even run)
             if (buildResult.TryGetValue("fatal_error", out var fatal) && fatal != null)
             {
-                return JsonSerializer.Serialize(new
-                {
-                    success = false,
-                    fatal_error = fatal.ToString(),
-                    hint = "The builder process itself failed. Check that the builder path is correct, Java is installed, and the project file is valid. Do NOT try to run the builder manually — it requires environment setup that only this tool provides."
-                }, new JsonSerializerOptions { WriteIndented = true });
+                return $"❌ BUILD SYSTEM ERROR\n\n{fatal}\n\nDo NOT try to run the builder manually.";
             }
+
+            bool success = buildResult.TryGetValue("success", out var s) && s is bool sb && sb;
 
             if (!success)
             {
+                // Usa el BuildFormatter que ya tienes — produce Markdown legible con
+                // file, line, source_line, y message para cada error
                 var formattedErrors = BuildFormatter.Format(buildResult);
-                return JsonSerializer.Serialize(new
-                {
-                    success = false,
-                    compilation_errors = formattedErrors,
-                    hint = "DO NOT run shell commands like dir, cd, cat, or try to invoke the builder manually. Follow this cycle:\n" +
-                           "1. Read the compilation_errors above carefully — they tell you exact file, line, and error message\n" +
-                           "2. Use write_file or edit_sub to fix ONLY the specific errors reported\n" +
-                           "3. Call compile_project again\n" +
-                           "4. Repeat until success=true"
-                }, new JsonSerializerOptions { WriteIndented = true });
+
+                return $"❌ COMPILATION FAILED\n\n" +
+                       $"DO NOT run shell commands. Read the errors below, fix the code with write_file or edit_sub, then call compile_project again.\n\n" +
+                       $"{formattedErrors}";
             }
 
-            return JsonSerializer.Serialize(new
-            {
-                success = true,
-                builderUsed = builderPath,
-                message = "Compilation successful. No errors."
-            }, new JsonSerializerOptions { WriteIndented = true });
+            return $"✅ COMPILATION SUCCESSFUL\nBuilder: {builderPath}\nNo errors.";
         }
 
         [McpServerTool, Description("Decodes a B4X visual layout file into readable JSON: control hierarchy, types, positions (resolved from the correct screen variant, not the misleading top-level template defaults), and properties like text/hint/tag/drawable. Works for both .bal (B4A) and .bjl (B4J) — they share the exact same binary format.")]

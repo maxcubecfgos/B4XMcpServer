@@ -19,12 +19,10 @@ namespace B4XContext.Services
                 return result;
             }
 
-            // CORRECCIÓN: El B4ABuilder.exe NO acepta -task=build. 
-            // Pasa simplemente la ruta del proyecto entre comillas para evitar problemas con espacios.
             var startInfo = new ProcessStartInfo
             {
                 FileName = builderPath,
-                Arguments = $"\"{projectFile}\"",
+                Arguments = $"-Task=build -Project=\"{projectFile}\"",
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
                 UseShellExecute = false,
@@ -55,21 +53,16 @@ namespace B4XContext.Services
                 }
 
                 string rawOut = output.ToString();
-                var parsed = BuildOutputParser.Parse(rawOut);
 
-                // VETO ABSOLUTO: Si el compilador falla, inyectamos la orden de parada
-                if (proc.ExitCode != 0 || rawOut.Contains("Error:"))
+                // Si el builder no produjo nada, es un error fatal del sistema
+                if (rawOut.Trim().Length == 0 && proc.ExitCode != 0)
                 {
-                    parsed["success"] = false;
-                    parsed["stop_optimization"] = true; // Flag clave para que la IA se detenga
-                    parsed["message"] = "Compilation failed. STOP modifying files. Analyze the error reported.";
-
-                    if (!parsed.ContainsKey("fatal_error"))
-                    {
-                        parsed["fatal_error"] = $"Builder exited with code {proc.ExitCode}.\nOutput:\n{rawOut.Trim()}";
-                    }
+                    result["fatal_error"] = $"Builder exited with code {proc.ExitCode} and produced no output.";
+                    return result;
                 }
 
+                // Parsear el output — BuildOutputParser ya detecta errores y pone success=false
+                var parsed = BuildOutputParser.Parse(rawOut);
                 return parsed;
             }
             catch (Exception ex)

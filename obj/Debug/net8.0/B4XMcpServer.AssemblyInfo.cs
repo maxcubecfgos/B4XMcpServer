@@ -14,7 +14,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("B4XMcpServer")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+bfed81b7e4c55ddd92eccdd9e37e099f285880e1")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+43975fc65055f2508485593e6f70e377ac6d2b0a")]
 [assembly: System.Reflection.AssemblyProductAttribute("B4XMcpServer")]
 [assembly: System.Reflection.AssemblyTitleAttribute("B4XMcpServer")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
