@@ -41,12 +41,15 @@ namespace B4XMcpServer.Tools
             var warnings = new List<string>();
             bool hasMainBas = files.Any(f => f.Name.Equals("Main.bas", StringComparison.OrdinalIgnoreCase));
 
+            bool isB4A = projectFile != null && string.Equals(Path.GetExtension(projectFile), ".b4a", StringComparison.OrdinalIgnoreCase);
+
             // Warning 1: Where does the main code live?
             if (!hasMainBas)
             {
                 string? mainModule = projectFile != null ? Path.GetFileName(projectFile) : "the .b4a/.b4j file";
-                warnings.Add($"⚠️ CRITICAL: This project does NOT have a Main.bas file. The main activity code lives inside '{mainModule}'. " +
-                              "DO NOT create Main.bas. DO NOT look for Main.bas. All Subs (Process_Globals, Globals, Activity_Create, etc.) go in the project file itself.");
+                string entryPointHint = isB4A ? "Activity_Create, etc." : "AppStart, etc.";
+                warnings.Add($"⚠️ CRITICAL: This project does NOT have a Main.bas file. The main {(isB4A ? "activity" : "module")} code lives inside '{mainModule}'. " +
+                              $"DO NOT create Main.bas. DO NOT look for Main.bas. All Subs (Process_Globals, Globals, {entryPointHint}) go in the project file itself.");
             }
 
             // Warning 2: File structure
@@ -62,12 +65,20 @@ namespace B4XMcpServer.Tools
                           "Module1=Starter in the project metadata is required. NEVER read, modify, or worry about Starter.bas — it just works.");
 
             // Warning 4: Sacred regions
-            warnings.Add("🛑 UNTOUCHABLE: The #Region Project Attributes and #Region Activity Attributes blocks at the top of the source code section MUST NEVER be modified, moved, or deleted. " +
-                          "They contain #ApplicationLabel, #VersionCode, #FullScreen, #IncludeTitle — essential IDE settings.");
+            // #Region Activity Attributes is Android/Activity-specific (B4A only) — B4J (Form) and
+            // B4i (Page) projects never have it, so only mention it for B4A to avoid misleading
+            // the caller into thinking a B4J/B4i project is missing something.
+            warnings.Add(isB4A
+                ? "🛑 UNTOUCHABLE: The #Region Project Attributes and #Region Activity Attributes blocks at the top of the source code section MUST NEVER be modified, moved, or deleted. " +
+                  "They contain #ApplicationLabel, #VersionCode, #FullScreen, #IncludeTitle — essential IDE settings."
+                : "🛑 UNTOUCHABLE: The #Region Project Attributes block at the top of the source code section MUST NEVER be modified, moved, or deleted. " +
+                  "It contains #ApplicationLabel, #VersionCode — essential IDE settings.");
 
             // Warning 5: Manifest in metadata only
-            warnings.Add("ℹ️ #Region Manifest Editor and AddManifestText belong in the PROJECT METADATA section only. " +
-                          "#Region Project Attributes and #Region Activity Attributes belong in the SOURCE CODE section. Do NOT move them between sections.");
+            warnings.Add(isB4A
+                ? "ℹ️ #Region Manifest Editor and AddManifestText belong in the PROJECT METADATA section only. " +
+                  "#Region Project Attributes and #Region Activity Attributes belong in the SOURCE CODE section. Do NOT move them between sections."
+                : "ℹ️ #Region Project Attributes belongs in the SOURCE CODE section. Do NOT move it between sections.");
             // ──────────────────────────────────────────────────────────────
 
             var result = new
@@ -178,7 +189,10 @@ namespace B4XMcpServer.Tools
                 return errors;
             }
 
-            string raw = File.ReadAllText(projectFile);
+            // Use the same encoding-detection cascade as everywhere else in the codebase —
+            // File.ReadAllText assumes UTF-8/ASCII and would misread a windows-1252 project
+            // file, same underlying issue that was fixed in CodeUtils.
+            string raw = CodeUtils.DecodeFileWithFallback(projectFile);
             const string marker = "@EndOfDesignText@";
             int markerIdx = raw.IndexOf(marker, StringComparison.Ordinal);
 
@@ -190,6 +204,8 @@ namespace B4XMcpServer.Tools
 
             string headerSection = raw.Substring(0, markerIdx);
             string codeSection = raw.Substring(markerIdx + marker.Length).TrimStart('\r', '\n');
+
+            bool isB4A = string.Equals(Path.GetExtension(projectFile), ".b4a", StringComparison.OrdinalIgnoreCase);
 
             // Parse header key=value pairs
             var header = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
@@ -271,17 +287,24 @@ namespace B4XMcpServer.Tools
             if (codeSection.Contains("AddManifestText", StringComparison.OrdinalIgnoreCase))
                 errors.Add("❌ AddManifestText found in SOURCE CODE section. Manifest modifications belong in the PROJECT METADATA section only, never in code.");
 
-            // Check 9: #Region Project Attributes and #Region Activity Attributes MUST be in source code section
+            // Check 9: #Region Project Attributes MUST be in source code section (all project types).
+            // #Region Activity Attributes, however, is Android/Activity-specific — B4J (desktop/
+            // server, uses Form) and B4i (uses Page) projects never have this region, so requiring
+            // it there is a false positive that blocks compilation for no reason.
             bool hasProjectAttrs = codeSection.Contains("#Region  Project Attributes", StringComparison.OrdinalIgnoreCase) ||
                                    codeSection.Contains("#Region Project Attributes", StringComparison.OrdinalIgnoreCase);
-            bool hasActivityAttrs = codeSection.Contains("#Region  Activity Attributes", StringComparison.OrdinalIgnoreCase) ||
-                                    codeSection.Contains("#Region Activity Attributes", StringComparison.OrdinalIgnoreCase);
 
             if (!hasProjectAttrs)
                 errors.Add("🛑 FATAL: #Region Project Attributes block is MISSING from the source code section. This block is REQUIRED (#ApplicationLabel, #VersionCode, etc.). Restore it from the .bak backup file.");
 
-            if (!hasActivityAttrs)
-                errors.Add("🛑 FATAL: #Region Activity Attributes block is MISSING from the source code section. This block is REQUIRED (#FullScreen, #IncludeTitle, etc.). Restore it from the .bak backup file.");
+            if (isB4A)
+            {
+                bool hasActivityAttrs = codeSection.Contains("#Region  Activity Attributes", StringComparison.OrdinalIgnoreCase) ||
+                                        codeSection.Contains("#Region Activity Attributes", StringComparison.OrdinalIgnoreCase);
+
+                if (!hasActivityAttrs)
+                    errors.Add("🛑 FATAL: #Region Activity Attributes block is MISSING from the source code section. This block is REQUIRED (#FullScreen, #IncludeTitle, etc.). Restore it from the .bak backup file.");
+            }
 
             return errors;
         }
