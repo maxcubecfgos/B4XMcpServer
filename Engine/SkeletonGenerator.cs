@@ -2,7 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 
-namespace B4XContext.Engine
+namespace B4XMcpServer.Engine
 {
     /// <summary>
     /// Port of b4x_skeleton.generate_module_skeleton from Python.
@@ -26,7 +26,7 @@ namespace B4XContext.Engine
         public static string GenerateModuleSkeleton(string source, IEnumerable<Node> nodes, IEnumerable<string> keepFullNames = null)
         {
             var keepSet = new HashSet<string>((keepFullNames ?? Enumerable.Empty<string>()).Select(n => n.ToLowerInvariant()));
-            var lines = source?.Split(new[] {"\n"}, StringSplitOptions.None) ?? new string[0];
+            var lines = source?.Split(new[] { "\n" }, StringSplitOptions.None) ?? new string[0];
             if (nodes == null || !nodes.Any())
                 return source;
 

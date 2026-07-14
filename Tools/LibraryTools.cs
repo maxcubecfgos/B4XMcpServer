@@ -6,8 +6,8 @@ using System.IO;
 using System.Linq;
 using System.Text.Json;
 using System.Text.RegularExpressions;
-using B4XContext.Services;
-using B4XContext.Utils;
+using B4XMcpServer.Services;
+using B4XMcpServer.Utils;
 
 namespace B4XMcpServer.Tools
 {

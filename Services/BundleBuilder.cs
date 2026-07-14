@@ -3,11 +3,11 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Text;
-using B4XContext.Models;
-using B4XContext.Engine;
-using FileMode = B4XContext.Models.FileMode;
+using B4XMcpServer.Models;
+using B4XMcpServer.Engine;
+using FileMode = B4XMcpServer.Models.FileMode;
 
-namespace B4XContext.Services
+namespace B4XMcpServer.Services
 {
     public static class BundleBuilder
     {

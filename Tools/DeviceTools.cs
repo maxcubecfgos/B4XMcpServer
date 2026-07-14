@@ -1,10 +1,11 @@
 ﻿using ModelContextProtocol.Server;
 using System;
+using System.Collections.Generic;
 using System.ComponentModel;
 using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
-using B4XContext.Services;
+using B4XMcpServer.Services;
 
 namespace B4XMcpServer.Tools
 {
@@ -18,7 +19,7 @@ namespace B4XMcpServer.Tools
             if (adb == null)
                 throw new Exception("adb.exe not found. Set ANDROID_HOME or ANDROID_SDK_ROOT, or install the Android SDK platform-tools.");
 
-            var (output, _) = RunAdb(adb, "devices -l");
+            var (output, _) = RunAdb(adb, new[] { "devices", "-l" });
             return JsonSerializer.Serialize(new { raw = output });
         }
 
@@ -31,31 +32,55 @@ namespace B4XMcpServer.Tools
             if (adb == null)
                 throw new Exception("adb.exe not found. Set ANDROID_HOME or ANDROID_SDK_ROOT, or install the Android SDK platform-tools.");
 
-            var deviceArg = string.IsNullOrEmpty(deviceSerial) ? "" : $"-s {deviceSerial} ";
-            var (output, _) = RunAdb(adb, $"{deviceArg}logcat -d -t {lines} -s B4A:V");
+            var args = new List<string>();
+            if (!string.IsNullOrEmpty(deviceSerial))
+            {
+                args.Add("-s");
+                args.Add(deviceSerial);
+            }
+            args.AddRange(new[] { "logcat", "-d", "-t", lines.ToString(), "-s", "B4A:V" });
+            var (output, _) = RunAdb(adb, args);
             return JsonSerializer.Serialize(new { lines, output });
         }
 
-        private static (string output, int exitCode) RunAdb(string adbPath, string arguments)
+        private static (string output, int exitCode) RunAdb(string adbPath, IEnumerable<string> arguments)
         {
             var psi = new ProcessStartInfo
             {
                 FileName = adbPath,
-                Arguments = arguments,
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
                 UseShellExecute = false,
                 CreateNoWindow = true
             };
+            foreach (var arg in arguments)
+                psi.ArgumentList.Add(arg);
 
             using var proc = Process.Start(psi);
             if (proc == null) throw new Exception("Failed to start adb.exe process.");
 
             var sb = new StringBuilder();
-            sb.Append(proc.StandardOutput.ReadToEnd());
-            sb.Append(proc.StandardError.ReadToEnd());
-            proc.WaitForExit(15000);
-            return (sb.ToString(), proc.ExitCode);
+            proc.OutputDataReceived += (s, e) => { if (e.Data != null) sb.AppendLine(e.Data); };
+            proc.ErrorDataReceived += (s, e) => { if (e.Data != null) sb.AppendLine(e.Data); };
+            proc.BeginOutputReadLine();
+            proc.BeginErrorReadLine();
+
+            if (!proc.WaitForExit(15000))
+            {
+                try
+                {
+                    proc.Kill(entireProcessTree: true);
+                    proc.WaitForExit(2000); // give the OS a moment to finalize the exit code
+                }
+                catch { /* best-effort kill */ }
+                sb.AppendLine("Error: adb command timed out after 15 seconds.");
+            }
+
+            int exitCode;
+            try { exitCode = proc.ExitCode; }
+            catch { exitCode = -1; } // process may not have a valid exit code after a forced kill
+
+            return (sb.ToString(), exitCode);
         }
     }
 }

@@ -6,7 +6,7 @@ using System.Linq;
 using System.Text.RegularExpressions;
 using System.Xml.Linq;
 
-namespace B4XContext.Services
+namespace B4XMcpServer.Services
 {
     public class LibraryInfo
     {

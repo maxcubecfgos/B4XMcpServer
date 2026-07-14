@@ -1,7 +1,7 @@
 ﻿using System;
 using System.IO;
 
-namespace B4XContext.Services
+namespace B4XMcpServer.Services
 {
     public static class AdbLocator
     {

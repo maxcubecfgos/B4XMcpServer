@@ -1,7 +1,7 @@
 using System;
 using System.Collections.Generic;
 
-namespace B4XContext.Engine
+namespace B4XMcpServer.Engine
 {
     public static class B4xLexer
     {

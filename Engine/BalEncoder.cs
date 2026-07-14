@@ -5,7 +5,7 @@ using System.IO.Compression;
 using System.Text;
 using Newtonsoft.Json.Linq;
 
-namespace B4XContext.Engine
+namespace B4XMcpServer.Engine
 {
     public static class BalEncoder
     {

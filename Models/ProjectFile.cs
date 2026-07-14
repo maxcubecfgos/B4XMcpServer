@@ -1,6 +1,6 @@
 using System;
 
-namespace B4XContext.Models
+namespace B4XMcpServer.Models
 {
     public enum FileMode
     {

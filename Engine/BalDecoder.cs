@@ -5,7 +5,7 @@ using System.IO.Compression;
 using System.Text;
 using System.Text.Json;
 
-namespace B4XContext.Engine
+namespace B4XMcpServer.Engine
 {
     public static class BalDecoder
     {

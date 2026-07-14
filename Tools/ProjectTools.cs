@@ -1,7 +1,7 @@
-﻿using B4XContext.Engine;
-using B4XContext.Models;
-using B4XContext.Services;
-using B4XContext.Utils;
+﻿using B4XMcpServer.Engine;
+using B4XMcpServer.Models;
+using B4XMcpServer.Services;
+using B4XMcpServer.Utils;
 using ModelContextProtocol.Server;
 using System;
 using System.Collections.Generic;
@@ -10,7 +10,7 @@ using System.IO;
 using System.Linq;
 using System.Text.Json;
 using System.Text.RegularExpressions;
-using ContextFileMode = B4XContext.Models.FileMode;
+using ContextFileMode = B4XMcpServer.Models.FileMode;
 
 namespace B4XMcpServer.Tools
 {
@@ -99,17 +99,25 @@ namespace B4XMcpServer.Tools
             return File.ReadAllText(filePath);
         }
 
-        [McpServerTool, Description("Writes (overwrites) a file with the given content. This replaces the entire file, so read it first with get_file_content if you need to preserve parts of it. Typically used to save an edited B4X module back to disk.")]
+        [McpServerTool, Description("Writes (overwrites) a file with the given content. This replaces the entire file, so read it first with get_file_content if you need to preserve parts of it. Typically used to save an edited B4X module back to disk. Creates a .bak backup first if the file already exists.")]
         public static string WriteFile(
             [Description("Absolute path to the file to write.")] string filePath,
             [Description("The full new content of the file.")] string content)
         {
+            string? backupPath = null;
+            if (File.Exists(filePath))
+            {
+                backupPath = filePath + ".bak";
+                File.Copy(filePath, backupPath, overwrite: true);
+            }
+
             File.WriteAllText(filePath, content);
             CacheManager.Invalidate(filePath);
             return JsonSerializer.Serialize(new
             {
                 success = true,
                 path = filePath,
+                backup = backupPath,
                 bytesWritten = System.Text.Encoding.UTF8.GetByteCount(content)
             });
         }
@@ -381,7 +389,7 @@ namespace B4XMcpServer.Tools
             public string NewCode { get; set; } = string.Empty;
         }
 
-        [McpServerTool, Description("Replaces the entire body of a single Sub in a B4X module in-place, without touching the rest of the file. Locates the Sub by name using the real B4X parser, so partial/skeleton context is enough to safely target it. If the Sub isn't found, returns the list of Subs that do exist in the file so the caller can retry with the correct name.")]
+        [McpServerTool, Description("Replaces the entire body of a single Sub in a B4X module in-place, without touching the rest of the file. Locates the Sub by name using the real B4X parser, so partial/skeleton context is enough to safely target it. If the Sub isn't found, returns the list of Subs that do exist in the file so the caller can retry with the correct name. Creates a .bak backup first.")]
         public static string EditSub(EditSubRequest request)
         {
             var filePath = request.FilePath;
@@ -391,7 +399,12 @@ namespace B4XMcpServer.Tools
             if (!File.Exists(filePath))
                 throw new FileNotFoundException($"File not found: {filePath}");
 
-            string raw = File.ReadAllText(filePath);
+            // Use the encoding-detecting reader (header-preserving variant), not
+            // File.ReadAllText, so modules saved in windows-1252 (common on Spanish/Windows
+            // locales) aren't silently corrupted — same underlying fix as
+            // CodeUtils.ReadTextSafely's encoding-detection bug, but keeping the IDE header
+            // intact since we need to reassemble it below.
+            string raw = CodeUtils.DecodeFileWithFallback(filePath);
 
             const string marker = "@EndOfDesignText@";
             int markerIdx = raw.IndexOf(marker, StringComparison.Ordinal);
@@ -434,6 +447,9 @@ namespace B4XMcpServer.Tools
             var updatedCodeSection = string.Join("\n", lines);
             var finalContent = markerIdx >= 0 ? header + "\r\n" + updatedCodeSection : updatedCodeSection;
 
+            string backupPath = filePath + ".bak";
+            File.Copy(filePath, backupPath, overwrite: true);
+
             File.WriteAllText(filePath, finalContent);
             CacheManager.Invalidate(filePath);
 
@@ -441,6 +457,7 @@ namespace B4XMcpServer.Tools
             {
                 success = true,
                 filePath,
+                backup = backupPath,
                 subReplaced = target.Name,
                 originalLineRange = new { start = target.StartLine, end = target.EndLine },
                 newLineCount = newLines.Length
@@ -475,7 +492,19 @@ namespace B4XMcpServer.Tools
             if (root == null)
                 throw new DirectoryNotFoundException($"Could not determine a B4X project root from '{projectPath}'.");
 
-            var regex = new Regex(pattern, RegexOptions.IgnoreCase);
+            Regex regex;
+            try
+            {
+                // A timeout is essential here: `pattern` comes straight from the MCP caller
+                // (the AI), and an unbounded Regex against untrusted patterns is vulnerable to
+                // catastrophic backtracking (e.g. `(a+)+b`) — without a timeout, one bad pattern
+                // can hang this tool call, and with it the whole MCP server process, indefinitely.
+                regex = new Regex(pattern, RegexOptions.IgnoreCase, TimeSpan.FromSeconds(2));
+            }
+            catch (ArgumentException ex)
+            {
+                throw new ArgumentException($"Invalid regex pattern: {ex.Message}");
+            }
 
             var files = ProjectScanner.ScanProject(root)
                 .Where(f => f.Kind == "bas" || (request.IncludeProjectFile && (f.Kind == "b4a" || f.Kind == "b4j" || f.Kind == "b4i")))
@@ -483,6 +512,7 @@ namespace B4XMcpServer.Tools
 
             var matches = new List<object>();
             var filesSearched = 0;
+            string? timeoutWarning = null;
             foreach (var f in files)
             {
                 if (matches.Count >= request.MaxResults) break;
@@ -494,12 +524,23 @@ namespace B4XMcpServer.Tools
                 var lines = content.Split('\n');
                 for (int i = 0; i < lines.Length; i++)
                 {
-                    if (regex.IsMatch(lines[i]))
+                    bool isMatch;
+                    try
+                    {
+                        isMatch = regex.IsMatch(lines[i]);
+                    }
+                    catch (RegexMatchTimeoutException)
+                    {
+                        timeoutWarning = $"Pattern took too long against a line in {f.Path}:{i + 1} and was stopped early (possible catastrophic backtracking). Results below are partial — try a simpler/more specific pattern.";
+                        break;
+                    }
+                    if (isMatch)
                     {
                         matches.Add(new { file = f.Path, line = i + 1, text = lines[i].TrimEnd('\r').Trim() });
                         if (matches.Count >= request.MaxResults) break;
                     }
                 }
+                if (timeoutWarning != null) break;
             }
 
             return JsonSerializer.Serialize(new
@@ -508,6 +549,7 @@ namespace B4XMcpServer.Tools
                 filesSearched,
                 matchCount = matches.Count,
                 truncated = matches.Count >= request.MaxResults,
+                timeoutWarning,
                 matches
             }, new JsonSerializerOptions { WriteIndented = true });
         }

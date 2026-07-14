@@ -2,9 +2,9 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
-using B4XContext.Models;
+using B4XMcpServer.Models;
 
-namespace B4XContext.Services
+namespace B4XMcpServer.Services
 {
     public static class ProjectScanner
     {

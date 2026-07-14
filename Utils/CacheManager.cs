@@ -3,10 +3,15 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 
-namespace B4XContext.Utils
+namespace B4XMcpServer.Utils
 {
     public static class CacheManager
     {
+        // Prevents unbounded memory growth in long-running MCP server sessions.
+        // 500 entries is generous for a single-project dev workflow (source files,
+        // parsed ASTs, library lists, etc.) while still bounding worst-case memory use.
+        private const int MaxEntries = 500;
+
         private static readonly Dictionary<string, CacheEntry> _cache = new();
         private static readonly object _lock = new();
 
@@ -15,6 +20,26 @@ namespace B4XContext.Utils
             public object? Value { get; set; }
             public DateTime Mtime { get; set; }
             public DateTime Expiry { get; set; }
+            public DateTime LastAccessed { get; set; } = DateTime.UtcNow;
+        }
+
+        /// <summary>
+        /// Evicts the least-recently-accessed entries when the cache exceeds MaxEntries.
+        /// Must be called while already holding _lock.
+        /// </summary>
+        private static void EvictIfOverCapacityNoLock()
+        {
+            if (_cache.Count <= MaxEntries) return;
+
+            int toRemove = _cache.Count - MaxEntries;
+            var oldest = _cache
+                .OrderBy(kv => kv.Value.LastAccessed)
+                .Take(toRemove)
+                .Select(kv => kv.Key)
+                .ToList();
+
+            foreach (var key in oldest)
+                _cache.Remove(key);
         }
 
         /// <summary>
@@ -29,6 +54,7 @@ namespace B4XContext.Utils
                     var currentMtime = File.GetLastWriteTimeUtc(path);
                     if (currentMtime == entry.Mtime)
                     {
+                        entry.LastAccessed = DateTime.UtcNow;
                         result = (T?)entry.Value;
                         return true;
                     }
@@ -52,6 +78,7 @@ namespace B4XContext.Utils
                     Mtime = File.GetLastWriteTimeUtc(path),
                     Expiry = DateTime.MaxValue
                 };
+                EvictIfOverCapacityNoLock();
             }
         }
 
@@ -66,6 +93,7 @@ namespace B4XContext.Utils
                 {
                     if (DateTime.UtcNow <= entry.Expiry)
                     {
+                        entry.LastAccessed = DateTime.UtcNow;
                         result = (T?)entry.Value;
                         return true;
                     }
@@ -89,6 +117,7 @@ namespace B4XContext.Utils
                     Mtime = DateTime.MinValue,
                     Expiry = DateTime.UtcNow.AddSeconds(ttlSeconds)
                 };
+                EvictIfOverCapacityNoLock();
             }
         }
 
@@ -105,6 +134,7 @@ namespace B4XContext.Utils
                     Mtime = DateTime.MinValue,
                     Expiry = DateTime.MaxValue
                 };
+                EvictIfOverCapacityNoLock();
             }
         }
 
@@ -117,6 +147,7 @@ namespace B4XContext.Utils
             {
                 if (_cache.TryGetValue(key, out var entry))
                 {
+                    entry.LastAccessed = DateTime.UtcNow;
                     result = (T?)entry.Value;
                     return true;
                 }

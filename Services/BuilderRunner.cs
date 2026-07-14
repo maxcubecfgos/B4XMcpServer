@@ -3,9 +3,9 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Text;
-using B4XContext.Engine;
+using B4XMcpServer.Engine;
 
-namespace B4XContext.Services
+namespace B4XMcpServer.Services
 {
     public static class BuilderRunner
     {
@@ -22,13 +22,17 @@ namespace B4XContext.Services
             var startInfo = new ProcessStartInfo
             {
                 FileName = builderPath,
-                Arguments = $"-Task=build -Project=\"{projectFile}\"",
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
                 UseShellExecute = false,
                 CreateNoWindow = true,
                 WorkingDirectory = Path.GetDirectoryName(projectFile)
             };
+            // ArgumentList lets .NET handle quoting/escaping per-argument correctly,
+            // instead of manually interpolating quotes into a single Arguments string
+            // (which breaks, or worse, allows argument injection, if projectFile contains a `"`).
+            startInfo.ArgumentList.Add("-Task=build");
+            startInfo.ArgumentList.Add($"-Project={projectFile}");
 
             try
             {

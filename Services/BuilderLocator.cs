@@ -2,7 +2,7 @@ using System;
 using System.IO;
 using System.Text.Json;
 
-namespace B4XContext.Services
+namespace B4XMcpServer.Services
 {
     public static class BuilderLocator
     {

@@ -2,7 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Text;
 
-namespace B4XContext.Services
+namespace B4XMcpServer.Services
 {
     public static class BuildFormatter
     {

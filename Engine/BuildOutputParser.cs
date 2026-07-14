@@ -2,7 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Text.RegularExpressions;
 
-namespace B4XContext.Engine
+namespace B4XMcpServer.Engine
 {
     public static class BuildOutputParser
     {
