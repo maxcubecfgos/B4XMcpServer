@@ -13,7 +13,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("B4XMcpServer")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+364c9ad698fef1acb598137599d87994d0d6fb95")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+2a81ab4480cad8e124581ddb1a629a28675ca5e6")]
 [assembly: System.Reflection.AssemblyProductAttribute("B4XMcpServer")]
 [assembly: System.Reflection.AssemblyTitleAttribute("B4XMcpServer")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]

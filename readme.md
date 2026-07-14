@@ -21,10 +21,10 @@ This server gives AIs the context they need to work with B4X projects correctly.
 
 ### Option 1: Download the prebuilt executable (recommended)
 
-Every release is built automatically via GitHub Actions as a **self-contained, single-file executable** — no .NET runtime or SDK installation required on your machine.
+Every push of a `v*` tag triggers a GitHub Actions workflow that builds a **self-contained, single-file executable** and attaches it to a new GitHub Release — no .NET runtime or SDK installation required on your machine.
 
-1. Download `B4XMcpServer.exe` from the [Releases](../../releases) page.
-2. Place it anywhere on disk (e.g. `C:\Tools\B4XMcpServer\B4XMcpServer.exe`).
+1. Download and unzip `B4XMcpServer-<version>-win-x64.zip` from the [Releases](../../releases) page.
+2. Place `B4XMcpServer.exe` anywhere on disk (e.g. `C:\Tools\B4XMcpServer\B4XMcpServer.exe`).
 3. Point your MCP client at it directly (see [Configuration](#configuration) below).
 
 Prerequisites: B4A and/or B4J installed (for actual project compilation). Git and ADB are optional — features that depend on them will simply be unavailable if missing.
@@ -35,10 +35,12 @@ Prerequisites: .NET 8.0 SDK.
 
 ```bash
 cd B4XMcpServer
-dotnet publish -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -o ./bin/publish
+dotnet publish B4XMcpServer.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o publish
 ```
 
-This produces the same kind of self-contained executable as the GitHub Actions build in `./bin/publish/B4XMcpServer.exe`.
+This is the exact command the GitHub Actions release workflow runs, producing `publish\B4XMcpServer.exe`.
+
+> **Note:** "self-contained" bundles the .NET runtime, not Git or ADB. Those remain external tools the server shells out to — install them separately and make sure they're on your `PATH` if you want the git and device features.
 
 ## Configuration
 
