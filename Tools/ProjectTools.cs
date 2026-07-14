@@ -774,5 +774,74 @@ namespace B4XMcpServer.Tools
             if (endIdx < 0) return null;
             return raw.Substring(contentStart, endIdx - contentStart).Trim('\r', '\n');
         }
+        [McpServerTool, Description("Creates a new .bas module file with the correct IDE metadata header. The header is REQUIRED for the B4A IDE to open the file without errors. Choose type 'activity' for a screen module or 'class' for a code module.")]
+        public static string CreateBasModule(
+        [Description("Absolute path to the .bas file to create (e.g. 'C:\\...\\Settings.bas')")] string filePath,
+        [Description("Module type: 'activity' (has Activity_Create, LoadLayout) or 'class' (code-only)")] string moduleType = "activity")
+        {
+            if (File.Exists(filePath))
+                return JsonSerializer.Serialize(new
+                {
+                    success = false,
+                    error = $"File already exists: {filePath}",
+                    hint = "Use write_file to modify an existing module, or delete it first."
+                }, new JsonSerializerOptions { WriteIndented = true });
+
+            moduleType = moduleType.ToLowerInvariant().Trim();
+            bool isActivity = moduleType == "activity";
+            string moduleName = Path.GetFileNameWithoutExtension(filePath);
+
+            string header = $@"B4A=true
+            Group=Default Group
+            ModulesStructureVersion=1
+            Type={(isActivity ? "Activity" : "Class")}
+            Version=13.5
+            @EndOfDesignText@
+            ";
+
+            string code = isActivity
+            ? $@"#Region  Activity Attributes 
+	        #FullScreen: False
+	        #IncludeTitle: False
+            #End Region
+
+            Sub Process_Globals
+            End Sub
+
+            Sub Globals
+            End Sub
+
+            Sub Activity_Create(FirstTime As Boolean)
+	            Activity.LoadLayout(""{moduleName}"")
+            End Sub
+
+            Sub Activity_Resume
+            End Sub
+
+            Sub Activity_Pause (UserClosed As Boolean)
+            End Sub
+            "
+                            : $@"Sub Process_Globals
+            End Sub
+
+            Sub Globals
+            End Sub
+            ";
+
+            string? dir = Path.GetDirectoryName(filePath);
+            if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
+                Directory.CreateDirectory(dir);
+
+            File.WriteAllText(filePath, header + code);
+
+            return JsonSerializer.Serialize(new
+            {
+                success = true,
+                filePath,
+                moduleName,
+                moduleType = isActivity ? "Activity" : "Class",
+                hint = "Now call register_module_in_project to add this module to the project metadata."
+            }, new JsonSerializerOptions { WriteIndented = true });
+        }
     }
 }

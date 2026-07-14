@@ -1,71 +1,68 @@
-## ---------------------------------------------------------------------------
-## Archivos compilados y resultados de Build
-## ---------------------------------------------------------------------------
-bin/
-obj/
-Log/
-Logs/
-Debug/
-Release/
-Releases/
+## .NET / Visual Studio / Rider
+
+# Build results
+[Bb]in/
+[Oo]bj/
+[Dd]ebug/
+[Rr]elease/
 x64/
 x86/
-[Aa][Rr][Mm]/
-[Aa][Rr][Mm]64/
-bld/
-[Bb]uild/
-core/
-*.il
+[Ll]og/
+[Ll]ogs/
 
-## ---------------------------------------------------------------------------
-## Visual Studio y configuraciones de usuario locales
-## ---------------------------------------------------------------------------
+# Publish output (dotnet publish -o ./bin/publish)
+publish/
+*.publish.xml
+*.pubxml.user
+
+# Visual Studio / Rider files
 .vs/
+.idea/
+*.suo
 *.user
 *.userosscache
 *.sln.docstates
-*.suo
-*.vssscc
-*.dotCover
+*.userprefs
 
-## ---------------------------------------------------------------------------
-## Paquetes NuGet y dependencias
-## ---------------------------------------------------------------------------
+# NuGet
 *.nupkg
 *.snupkg
-**/packages/
+**/[Pp]ackages/*
+!**/[Pp]ackages/build/
 *.nuget.props
 *.nuget.targets
-out/
 project.lock.json
-project.assets.json
+project.fragment.lock.json
+artifacts/
 
-## ---------------------------------------------------------------------------
-## JetBrains Rider / ReSharper
-## ---------------------------------------------------------------------------
-.idea/
-*.sln.iml
-_ReSharper*/
-*.[Rr]e[Ss]harper
-*.DotSettings.user
+# Build artifacts / intermediate
+*.dll
+*.exe
+*.pdb
+*.cache
 
-## ---------------------------------------------------------------------------
-## Resultados de Pruebas (Testing) y Cobertura
-## ---------------------------------------------------------------------------
+# Test results
 [Tt]est[Rr]esult*/
-[Bb]uild[Ll]og.*
-*.[Pp]ublish.xml
-*.pfx
-*.publishsettings
-CoverageLog*
+[Cc]overage/
+*.trx
 
-## ---------------------------------------------------------------------------
-## Archivos generados por el Sistema Operativo
-## ---------------------------------------------------------------------------
+## Project-specific
+
+# Backups created automatically before destructive operations (see readme)
+*.bak
+
+# Runtime cache used by CacheManager.cs
+.cache/
+cache/
+
+# OS files
 .DS_Store
-.DS_Store?
-._*
-.Spotlight-V100
-.Trashes
-ehthumbs.db
 Thumbs.db
+
+# Environment / secrets
+*.env
+.env.local
+
+# Editor
+.vscode/
+!.vscode/extensions.json

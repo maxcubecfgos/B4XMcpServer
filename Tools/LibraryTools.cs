@@ -170,9 +170,18 @@ namespace B4XMcpServer.Tools
 
         [McpServerTool, Description("Enables a library in a B4X project by adding it to the LibraryN keys in the project file header. If already enabled, does nothing. Creates .bak backup first.")]
         public static string EnableLibrary(
-            [Description("Absolute path to the .b4a/.b4j/.b4i project file.")] string projectFile,
-            [Description("Library name to enable (must match exactly as shown in list_project_libraries or list_available_libraries).")] string libraryName)
+        [Description("Absolute path to the .b4a/.b4j/.b4i project file, or to the project folder.")] string projectFile,
+        [Description("Library name to enable (must match exactly as shown in list_project_libraries or list_available_libraries).")] string libraryName)
         {
+            // If a directory was passed, find the project file
+            if (Directory.Exists(projectFile))
+            {
+                var found = ProjectScanner.FindProjectFile(projectFile);
+                if (found == null)
+                    throw new FileNotFoundException($"No .b4a/.b4j/.b4i project file found in '{projectFile}'.");
+                projectFile = found;
+            }
+
             if (!File.Exists(projectFile))
                 throw new FileNotFoundException($"Project file not found: {projectFile}");
 
@@ -180,7 +189,7 @@ namespace B4XMcpServer.Tools
             const string marker = "@EndOfDesignText@";
             int markerIdx = raw.IndexOf(marker, StringComparison.Ordinal);
             string headerSection = markerIdx >= 0 ? raw.Substring(0, markerIdx) : raw;
-            string rest = markerIdx >= 0 ? raw.Substring(markerIdx) : "";
+            string rest = markerIdx >= 0 ? raw.Substring(markerIdx + marker.Length) : "";
 
             var lines = headerSection.Split('\n').Select(l => l.TrimEnd('\r')).ToList();
 
@@ -213,8 +222,11 @@ namespace B4XMcpServer.Tools
                 }
             }
 
+            // Remove empty lines that break the parser (@EndOfDesignText@ must follow a key=value line directly)
+            lines = lines.Where(l => !string.IsNullOrWhiteSpace(l)).ToList();
+
             string newHeader = string.Join("\n", lines);
-            string newContent = markerIdx >= 0 ? newHeader + "\n" + rest : newHeader;
+            string newContent = markerIdx >= 0 ? newHeader + "\n" + marker + rest : newHeader;
 
             File.Copy(projectFile, projectFile + ".bak", overwrite: true);
             File.WriteAllText(projectFile, newContent);
@@ -232,9 +244,18 @@ namespace B4XMcpServer.Tools
 
         [McpServerTool, Description("Disables (removes) a library from a B4X project. Also renumbers remaining LibraryN entries so there are no gaps. Creates .bak backup first.")]
         public static string DisableLibrary(
-            [Description("Absolute path to the .b4a/.b4j/.b4i project file.")] string projectFile,
+            [Description("Absolute path to the .b4a/.b4j/.b4i project file, or to the project folder.")] string projectFile,
             [Description("Library name to disable (exact name as shown in list_project_libraries).")] string libraryName)
         {
+            // If a directory was passed, find the project file
+            if (Directory.Exists(projectFile))
+            {
+                var found = ProjectScanner.FindProjectFile(projectFile);
+                if (found == null)
+                    throw new FileNotFoundException($"No .b4a/.b4j/.b4i project file found in '{projectFile}'.");
+                projectFile = found;
+            }
+
             if (!File.Exists(projectFile))
                 throw new FileNotFoundException($"Project file not found: {projectFile}");
 
@@ -242,7 +263,7 @@ namespace B4XMcpServer.Tools
             const string marker = "@EndOfDesignText@";
             int markerIdx = raw.IndexOf(marker, StringComparison.Ordinal);
             string headerSection = markerIdx >= 0 ? raw.Substring(0, markerIdx) : raw;
-            string rest = markerIdx >= 0 ? raw.Substring(markerIdx) : "";
+            string rest = markerIdx >= 0 ? raw.Substring(markerIdx + marker.Length) : "";
 
             var lines = headerSection.Split('\n').Select(l => l.TrimEnd('\r')).ToList();
 
@@ -291,8 +312,11 @@ namespace B4XMcpServer.Tools
                 }
             }
 
+            // Remove empty lines that break the parser (@EndOfDesignText@ must follow a key=value line directly)
+            renumbered = renumbered.Where(l => !string.IsNullOrWhiteSpace(l)).ToList();
+
             string newHeader = string.Join("\n", renumbered);
-            string newContent = markerIdx >= 0 ? newHeader + "\n" + rest : newHeader;
+            string newContent = markerIdx >= 0 ? newHeader + "\n" + marker + rest : newHeader;
 
             File.Copy(projectFile, projectFile + ".bak", overwrite: true);
             File.WriteAllText(projectFile, newContent);

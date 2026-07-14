@@ -1,0 +1,74 @@
+# B4X MCP Server
+
+A Model Context Protocol (MCP) server that helps AI assistants understand and work with B4X projects (B4A, B4J, B4i). It's a companion tool for B4X developers, not a replacement for the IDE.
+
+## Why This Exists
+
+If you've ever tried to get an AI to help with B4X code, you know the struggle. B4X has its own way of doing things and most AIs simply don't get it. They invent methods that don't exist, corrupt project files, and confidently produce code that won't compile.
+
+This server gives AIs the context they need to work with B4X projects correctly. It handles the tricky parts (parsing, compiling, layout encoding) so the AI can focus on writing good code. It's here to make your life easier, not to replace the B4X IDE — you'll still use the IDE for visual design, debugging, etc.
+
+## What It Does
+
+- Reads and writes B4X source files safely (strips IDE metadata where appropriate, preserves it where it matters)
+- Compiles projects using the correct platform builder and returns errors with file names, line numbers, and source lines
+- Decodes and encodes binary layout files (`.bal`/`.bjl`) to/from JSON
+- Manages libraries (list available, search docs, enable/disable in project)
+- Provides git diff, log, and status
+- Includes a reference of B4X language gotchas that trip up AIs (and sometimes developers too)
+
+## Installation
+
+### Option 1: Download the prebuilt executable (recommended)
+
+Every release is built automatically via GitHub Actions as a **self-contained, single-file executable** — no .NET runtime or SDK installation required on your machine.
+
+1. Download `B4XMcpServer.exe` from the [Releases](../../releases) page.
+2. Place it anywhere on disk (e.g. `C:\Tools\B4XMcpServer\B4XMcpServer.exe`).
+3. Point your MCP client at it directly (see [Configuration](#configuration) below).
+
+Prerequisites: B4A and/or B4J installed (for actual project compilation). Git and ADB are optional — features that depend on them will simply be unavailable if missing.
+
+### Option 2: Build from source
+
+Prerequisites: .NET 8.0 SDK.
+
+```bash
+cd B4XMcpServer
+dotnet publish -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -o ./bin/publish
+```
+
+This produces the same kind of self-contained executable as the GitHub Actions build in `./bin/publish/B4XMcpServer.exe`.
+
+## Configuration
+
+Add to your MCP client config (Claude Desktop, Cline, Continue.dev, etc.):
+
+```json
+{
+  "mcpServers": {
+    "b4x-tools": {
+      "command": "C:\\path\\to\\B4XMcpServer.exe",
+      "args": []
+    }
+  }
+}
+```
+
+No `dotnet` command, project path, or runtime installation needed — the executable is fully self-contained.
+
+## How It Works
+
+The server knows about B4X project structure — the metadata section vs. source code section, how modules and layouts are registered, which files are safe to touch and which should be left alone. It handles the binary layout format correctly and knows what types and methods actually exist in B4A/B4J.
+
+When an AI edits code, the server validates the project structure before compiling. When compilation fails, it parses the builder output into structured errors the AI can act on. Every destructive operation creates a `.bak` backup first.
+
+## A Note on AI Models
+
+This was developed and tested with free-tier AI models — the kind that hallucinate, get confused, and drift off-task. The guardrails built into this server (structural validation, language gotchas, pre-compile checks) were designed specifically to keep these limited models on the rails.
+
+With stronger models, it works even better. Fewer mistakes, fewer compile-fix cycles, faster results. But even with the free models, it gets the job done without corrupting your project.
+
+## License
+
+MIT License. See LICENSE for details.

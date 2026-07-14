@@ -23,6 +23,22 @@ namespace B4XMcpServer.Tools
                 },
                 new
                 {
+                    title = "ALWAYS verify method signatures with get_core_api — never guess",
+                    severity = "HIGH",
+                    description = "B4X core types have specific method names and signatures. Common mistakes: List.Add() is correct but List.AddAll() not AddRange(), String.Length() is a method not a property, Map.Get() not Map.GetValue(). Use get_core_api to verify before writing code.",
+                    example = "DON'T: list.AddRange(items), string.Length, map.GetValue(key). DO: list.AddAll(items), string.Length(), map.Get(key).",
+                    fix = "Call get_core_api(typeName='List') or get_core_api() to see all signatures. Never guess a B4X method name — verify it first."
+                },
+                new
+                {
+                    title = "Designer script properties: use controlName.Property, not controlName.SetProperty",
+                    severity = "MEDIUM",
+                    description = "In designer scripts (AutoScaleAll, etc.), control properties are accessed via dot notation: Button1.Width, Label1.TextSize. Available properties: Left, Top, Width, Height, Right, Bottom, HorizontalCenter, VerticalCenter, Visible, TextSize, Text, Image. Also available: _c.DipToCurrent, _c.PerXToCurrent, _c.PerYToCurrent.",
+                    example = "Button1.Width = 50%x / Label1.TextSize = _c.DipToCurrent(16) / _c.SetLeftAndRight(Button1, 10%x, 90%x)",
+                    fix = "Designer scripts go in the scriptData section of the layout JSON. Use get_layout_structure to see existing scripts, write_layout to update them."
+                },
+                new
+                {
                     title = "NEVER modify, move, or delete the #Region Project Attributes or #Region Activity Attributes blocks",
                     severity = "CRITICAL",
                     description = "The #Region Project Attributes and #Region Activity Attributes blocks at the top of the source code section are SACRED. They contain #ApplicationLabel, #VersionCode, #VersionName, #FullScreen, #IncludeTitle — essential IDE settings. Touching them corrupts the project and breaks compilation.",
@@ -155,6 +171,92 @@ namespace B4XMcpServer.Tools
             {
                 count = gotchas.Length,
                 gotchas
+            }, new JsonSerializerOptions { WriteIndented = true });
+        }
+
+        [McpServerTool, Description("Returns the exact signatures for B4X core API: List, Map, Timer, String, Intent, Activity, DateTime, Bit, Regex, Matcher. Use this to verify method names, parameter types, and return types before writing code. Never guess a method signature — check it here first.")]
+        public static string GetCoreApi(
+    [Description("Optional: filter to a specific type. Valid values: List, Map, Timer, String, Intent, Activity, DateTime, Bit, Regex, Matcher. Omit to return all.")] string? typeName = null)
+        {
+            var api = new Dictionary<string, object>
+            {
+                ["List"] = new[] {
+            "Add(item As Object)", "AddAll(list As List)", "AddAllAt(index As Int, list As List)",
+            "Clear()", "Get(index As Int) As Object", "IndexOf(item As Object) As Int",
+            "Initialize()", "Initialize2(array As List)", "InsertAt(index As Int, list As List)",
+            "IsInitialized() As Boolean", "RemoveAt(index As Int)", "Set(index As Int, item As Object)",
+            "Size As Int", "Sort(ascending As Boolean)", "SortCaseInsensitive(ascending As Boolean)",
+            "SortType(fieldName As String, ascending As Boolean)", "SortTypeCaseInsensitive(fieldName As String, ascending As Boolean)"
+        },
+                ["Map"] = new[] {
+            "Initialize()", "Put(key As Object, value As Object) As Object", "Remove(key As Object) As Object",
+            "Get(key As Object) As Object", "GetDefault(key As Object, defaultValue As Object) As Object",
+            "GetKeyAt(index As Int) As Object", "GetValueAt(index As Int) As Object", "Clear()",
+            "ContainsKey(key As Object) As Boolean", "ContainsValue(value As Object) As Boolean",
+            "Keys() As IterableList", "Values() As IterableList", "Size As Int", "IsInitialized() As Boolean"
+        },
+                ["Timer"] = new[] {
+            "Initialize(eventName As String, interval As Long)", "IsInitialized() As Boolean",
+            "Enabled As Boolean", "Interval As Long"
+        },
+                ["String"] = new[] {
+            "Length() As Int", "IndexOf(searchFor As String) As Int", "IndexOf2(searchFor As String, index As Int) As Int",
+            "LastIndexOf(searchFor As String) As Int", "LastIndexOf2(searchFor As String, index As Int) As Int",
+            "Trim() As String", "SubString(beginIndex As Int) As String", "SubString2(beginIndex As Int, endIndex As Int) As String",
+            "CompareTo(other As String) As Int", "EqualsIgnoreCase(other As String) As Boolean", "CharAt(index As Int) As Char",
+            "StartsWith(prefix As String) As Boolean", "EndsWith(suffix As String) As Boolean",
+            "Replace(target As String, replacement As String) As String", "ToLowerCase() As String",
+            "Contains(searchFor As String) As Boolean", "ToUpperCase() As String", "GetBytes(charset As String) As Byte()"
+        },
+                ["Activity"] = new[] {
+            "AddView(view As View, left As Int, top As Int, width As Int, height As Int)",
+            "GetView(index As Int) As View", "RemoveAllViews()", "RemoveViewAt(index As Int)",
+            "NumberOfViews As Int", "LoadLayout(layoutFile As String)",
+            "AddMenuItem(title As String, eventName As String)", "Title As String", "Finish()",
+            "GetAllViewsRecursive() As IterableList"
+        },
+                ["DateTime"] = new[] {
+            "Now As Long", "Date(ticks As Long) As String", "Time(ticks As Long) As String",
+            "DateFormat As String", "TimeFormat As String", "DateParse(date As String) As Long",
+            "TimeParse(time As String) As Long", "DateTimeParse(date As String, time As String) As Long",
+            "GetYear(ticks As Long) As Int", "GetMonth(ticks As Long) As Int", "GetDayOfMonth(ticks As Long) As Int",
+            "GetHour(ticks As Long) As Int", "GetMinute(ticks As Long) As Int", "GetSecond(ticks As Long) As Int",
+            "Add(ticks As Long, years As Int, months As Int, days As Int) As Long",
+            "TicksPerSecond As Long", "TicksPerMinute As Long", "TicksPerHour As Long", "TicksPerDay As Long"
+        },
+                ["Bit"] = new[] {
+            "And(n1 As Int, n2 As Int) As Int", "Or(n1 As Int, n2 As Int) As Int",
+            "Xor(n1 As Int, n2 As Int) As Int", "Not(n As Int) As Int",
+            "ShiftLeft(n As Int, shift As Int) As Int", "ShiftRight(n As Int, shift As Int) As Int",
+            "UnsignedShiftRight(n As Int, shift As Int) As Int", "ToHexString(n As Int) As String",
+            "ParseInt(value As String, radix As Int) As Int", "ArrayCopy(...)"
+        },
+                ["Regex"] = new[] {
+            "IsMatch(pattern As String, text As String) As Boolean",
+            "Replace(pattern As String, text As String, template As String) As String",
+            "Split(pattern As String, text As String) As String()",
+            "Matcher(pattern As String, text As String) As Matcher"
+        },
+                ["Matcher"] = new[] {
+            "Find() As Boolean", "Group(index As Int) As String", "GroupCount As Int",
+            "Match As String", "GetStart(index As Int) As Int", "GetEnd(index As Int) As Int"
+        }
+            };
+
+            if (!string.IsNullOrEmpty(typeName) && api.ContainsKey(typeName))
+            {
+                return JsonSerializer.Serialize(new
+                {
+                    type = typeName,
+                    signatures = api[typeName]
+                }, new JsonSerializerOptions { WriteIndented = true });
+            }
+
+            return JsonSerializer.Serialize(new
+            {
+                availableTypes = api.Keys.ToArray(),
+                hint = "Pass typeName to get signatures for a specific type. E.g. get_core_api(typeName='List')",
+                api
             }, new JsonSerializerOptions { WriteIndented = true });
         }
     }
