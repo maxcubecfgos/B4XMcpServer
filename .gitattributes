@@ -1,0 +1,35 @@
+# Auto-detect text files and normalize line endings to LF in the repo
+* text=auto
+
+# Explicit C#/.NET source files: always LF in repo, checked out per-platform default
+*.cs text
+*.csproj text
+*.slnx text
+*.sln text eol=crlf
+*.json text
+*.md text
+*.yml text
+*.yaml text
+
+# Windows-specific scripts should keep CRLF
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+# Binary files - do not touch
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.dll binary
+*.exe binary
+*.pdb binary
+
+# B4X project/layout files are treated as opaque binary/text-with-metadata by tooling;
+# avoid line-ending rewrites that could corrupt IDE-managed headers.
+*.b4a text eol=crlf
+*.b4j text eol=crlf
+*.b4i text eol=crlf
+*.bal binary
+*.bjl binary
