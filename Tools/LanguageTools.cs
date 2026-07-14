@@ -8,11 +8,59 @@ namespace B4XMcpServer.Tools
     [McpServerToolType]
     public sealed class LanguageTools
     {
-        [McpServerTool, Description("Returns critical B4A/B4J language gotchas and pitfalls that frequently cause hard-to-debug bugs. Call this when starting work on a B4X project or when encountering unexpected behavior. Covers: case-insensitivity, variable shadowing, File.Exists with DirAssets, reserved keywords (Is, Rnd, ATan2), Color component extraction, Application_Error pitfalls, MediaPlayer issues, and more.")]
+        [McpServerTool, Description("Returns critical B4A/B4J language gotchas and pitfalls that frequently cause hard-to-debug bugs. Call this when starting work on a B4X project or when encountering unexpected behavior. Covers: case-insensitivity, variable shadowing, File.Exists with DirAssets, reserved keywords (Is, Rnd, ATan2), Color component extraction, Application_Error pitfalls, B4XView API, project file structure rules, and more.")]
         public static string GetLanguageGotchas()
         {
             var gotchas = new[]
             {
+                new
+                {
+                    title = "The .b4a/.b4j file has TWO sections: METADATA and CODE — never mix them",
+                    severity = "CRITICAL",
+                    description = "Every .b4a/.b4j file has a PROJECT METADATA section (NumberOfModules, Module1=Starter, Library1=core, ManifestCode=, Build1=, etc.) and a SOURCE CODE section (Subs, Types, #Region blocks). Never put code in the metadata section, never put metadata in the code section.",
+                    example = "DON'T put AddManifestText in the code. DON'T put Subs or #Region Project Attributes in the metadata section. DO keep them strictly separated.",
+                    fix = "Project metadata (Library1=, Module1=, ManifestCode=) stays in its section — use enable_library/disable_library to modify libraries. #Region Project Attributes and #Region Activity Attributes stay at the top of the source code section. #Region Manifest Editor stays in the metadata section."
+                },
+                new
+                {
+                    title = "NEVER modify, move, or delete the #Region Project Attributes or #Region Activity Attributes blocks",
+                    severity = "CRITICAL",
+                    description = "The #Region Project Attributes and #Region Activity Attributes blocks at the top of the source code section are SACRED. They contain #ApplicationLabel, #VersionCode, #VersionName, #FullScreen, #IncludeTitle — essential IDE settings. Touching them corrupts the project and breaks compilation.",
+                    example = "DON'T: write_file replacing the entire file. DON'T: delete or move these regions. DO: Leave them exactly as they are at the top of the source code section.",
+                    fix = "These regions are untouchable. The only safe way to modify code is via edit_sub on specific Subs. Never replace the whole file."
+                },
+                new
+                {
+                    title = "NEVER create Main.bas unless the project already has one",
+                    severity = "CRITICAL",
+                    description = "Most B4X projects have the main activity code inside the .b4a/.b4j file itself, NOT in a separate Main.bas. Check get_project_structure first — if Main.bas is not listed, the main code goes in the project file's source code section.",
+                    example = "DON'T: write_file('Main.bas', ...) when Main.bas doesn't exist in the project. DO: use edit_sub or write_file on the .b4a/.b4j file's source code section.",
+                    fix = "Always call get_project_structure first. If Main.bas is not in the file list, put all Activity_Create, Process_Globals, etc. directly in the .b4a/.b4j file."
+                },
+                new
+                {
+                    title = "NEVER put Manifest Editor blocks inside the source code section",
+                    severity = "CRITICAL",
+                    description = "The #Region Manifest Editor block belongs in the PROJECT METADATA section, NEVER in the source code section. Putting it in the code corrupts the file and breaks compilation.",
+                    example = "DON'T write #Region Manifest Editor in the source code. DO use write_manifest tool to modify the manifest safely.",
+                    fix = "Use the write_manifest tool to modify the Android manifest. Never manually add #Region Manifest Editor blocks to the source code."
+                },
+                new
+                {
+                    title = "NEVER read, modify, or worry about Starter.bas",
+                    severity = "CRITICAL",
+                    description = "Starter.bas is a system service module that handles app lifecycle (Service_Create, Service_Start, Application_Error). It NEVER needs to be read, modified, or worried about. It is hidden from get_project_structure for this reason.",
+                    example = "DON'T: get_file_content('Starter.bas'), analyze_module('Starter.bas'), or worry about Module1=Starter. DO: Ignore it completely — it just works.",
+                    fix = "Never call get_file_content, analyze_module, edit_sub, or any tool on Starter.bas. Module1=Starter in the project metadata is required and normal."
+                },
+                new
+                {
+                    title = "ALWAYS call compile_project after making changes — NEVER assume code compiles",
+                    severity = "CRITICAL",
+                    description = "The ONLY way to verify your code works is to call compile_project. The builder catches errors you can't see. If compile_project returns errors, read them carefully and fix exactly what they say — do NOT run shell commands like dir, cd, type, or try to invoke the builder manually.",
+                    example = "DON'T: 'The code looks correct, moving on.' DON'T: run B4ABuilder.exe, dir, or cat to debug. DO: Call compile_project, read the output, fix errors, repeat until success.",
+                    fix = "After any code change, immediately call compile_project. If it returns ❌ COMPILATION FAILED, read each error (file + line + message) and fix only those specific issues with write_file or edit_sub, then compile again."
+                },
                 new
                 {
                     title = "B4X is completely case-insensitive",
@@ -31,11 +79,19 @@ namespace B4XMcpServer.Tools
                 },
                 new
                 {
+                    title = "B4XView properties: use .Text, .SetColorAndBorder, .SetLayoutAnimated — NOT .Color, .Background, .SetOnClickListener with wrong signatures",
+                    severity = "HIGH",
+                    description = "B4XView has specific methods. Common mistakes: using .Color instead of .SetColorAndBorder, .Background instead of .SetBitmap, .IsInitialized (doesn't exist on B4XView), .ALIGNMENT_CENTER (use 'CENTER' string), .SetTextAlignment (doesn't exist).",
+                    example = "WRONG: btn.Color = xui.Color_Red / RIGHT: btn.SetColorAndBorder(xui.Color_Red, 0, xui.Color_Red, 12dip)",
+                    fix = "Use get_library_docs(libraryName='XUI', typeName='B4XView') to see the exact API. Key methods: .Text, .SetColorAndBorder(color, borderWidth, borderColor, cornerRadius), .SetLayoutAnimated(duration, left, top, width, height)."
+                },
+                new
+                {
                     title = "File.Exists does NOT work with File.DirAssets",
                     severity = "HIGH",
                     description = "File.Exists(File.DirAssets, filename) always returns False. Assets are bundled inside the APK and cannot be stat'd — only accessed directly.",
                     example = "If File.Exists(File.DirAssets, 'config.json') Then ... — this always skips, even if the file IS in the Files folder.",
-                    fix = "Use Try-Catch when loading assets, or maintain a hardcoded/manifest list of known asset names. Never guard asset access with File.Exists."
+                    fix = "Use Try-Catch when loading assets, or maintain a hardcoded list of known asset names. Never guard asset access with File.Exists."
                 },
                 new
                 {
@@ -44,6 +100,14 @@ namespace B4XMcpServer.Tools
                     description = "B4X has keywords that look like valid identifiers but are reserved: 'Is' (type-check operator), 'ATan2' (math function), 'Rnd' (random function). Using them as variable/Sub names causes compile errors.",
                     example = "Sub IsReady() or Dim IsActive As Boolean or Dim Rnd As Int — all compile errors.",
                     fix = "Avoid: Is*, ATan2*, Rnd* as identifiers. Use alternatives: IsOk -> Ready, Rnd -> RandVal, etc."
+                },
+                new
+                {
+                    title = "NEVER use shell commands — use MCP tools instead",
+                    severity = "CRITICAL",
+                    description = "Shell commands (dir, cd, type, cat, ls, B4ABuilder.exe, &&, ;, etc.) DO NOT WORK in this environment. The only way to read files is get_file_content, the only way to write is write_file/edit_sub, and the ONLY way to compile is compile_project.",
+                    example = "DON'T: type new.b4a, dir, cd && B4ABuilder.exe, ls -la. DO: get_file_content, compile_project, get_project_structure.",
+                    fix = "Use the MCP tools provided. If compile_project fails, READ the error message it returns — it contains everything you need to fix the problem."
                 },
                 new
                 {

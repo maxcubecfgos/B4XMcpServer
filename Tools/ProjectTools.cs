@@ -37,18 +37,52 @@ namespace B4XMcpServer.Tools
             var files = ProjectScanner.ScanProject(root);
             var projectFile = ProjectScanner.FindProjectFile(root);
 
+            // ── WARNINGS ────────────────────────────────────────────────
+            var warnings = new List<string>();
+            bool hasMainBas = files.Any(f => f.Name.Equals("Main.bas", StringComparison.OrdinalIgnoreCase));
+
+            // Warning 1: Where does the main code live?
+            if (!hasMainBas)
+            {
+                string? mainModule = projectFile != null ? Path.GetFileName(projectFile) : "the .b4a/.b4j file";
+                warnings.Add($"⚠️ CRITICAL: This project does NOT have a Main.bas file. The main activity code lives inside '{mainModule}'. " +
+                              "DO NOT create Main.bas. DO NOT look for Main.bas. All Subs (Process_Globals, Globals, Activity_Create, etc.) go in the project file itself.");
+            }
+
+            // Warning 2: File structure
+            if (projectFile != null)
+            {
+                warnings.Add($"ℹ️ The project file is '{Path.GetFileName(projectFile)}'. It has TWO sections:\n" +
+                              "  • PROJECT METADATA — IDE settings: NumberOfModules, Module1=Starter, Library1=core, Build1=, ManifestCode=, etc. NEVER delete or modify except via enable_library/disable_library.\n" +
+                              "  • SOURCE CODE — All Subs and logic. This is where you write and edit code.");
+            }
+
+            // Warning 3: Starter.bas is hidden
+            warnings.Add("ℹ️ Starter.bas exists but is hidden from this file list. It's a system service that handles app lifecycle. " +
+                          "Module1=Starter in the project metadata is required. NEVER read, modify, or worry about Starter.bas — it just works.");
+
+            // Warning 4: Sacred regions
+            warnings.Add("🛑 UNTOUCHABLE: The #Region Project Attributes and #Region Activity Attributes blocks at the top of the source code section MUST NEVER be modified, moved, or deleted. " +
+                          "They contain #ApplicationLabel, #VersionCode, #FullScreen, #IncludeTitle — essential IDE settings.");
+
+            // Warning 5: Manifest in metadata only
+            warnings.Add("ℹ️ #Region Manifest Editor and AddManifestText belong in the PROJECT METADATA section only. " +
+                          "#Region Project Attributes and #Region Activity Attributes belong in the SOURCE CODE section. Do NOT move them between sections.");
+            // ──────────────────────────────────────────────────────────────
+
             var result = new
             {
                 projectRoot = root,
                 projectFile,
                 fileCount = files.Count,
-                files = files.Select(f => new { path = f.Path, name = f.Name, kind = f.Kind })
+                files = files.Select(f => new { path = f.Path, name = f.Name, kind = f.Kind }),
+                warnings = warnings
             };
 
             return JsonSerializer.Serialize(result, new JsonSerializerOptions { WriteIndented = true });
         }
 
-        [McpServerTool, Description("Returns the full text content of a file (B4X module .bas, project file .b4a/.b4j/.b4i, or any other text file). For .bas/.b4a/.b4j/.b4i files, automatically strips the IDE metadata header (everything up to and including @EndOfDesignText@) since it's pure IDE bookkeeping with no useful content.")]
+        [McpServerTool, Description("Returns the full text content of a file (B4X module .bas, project file .b4a/.b4j/.b4i, or any other text file). For .bas files, strips the IDE metadata header automatically. For .b4a/.b4j files, returns the clean source code only.")]
         public static string GetFileContent(
             [Description("Absolute path to the file to read.")] string filePath)
         {
@@ -56,11 +90,13 @@ namespace B4XMcpServer.Tools
                 throw new FileNotFoundException($"File not found: {filePath}");
 
             var ext = Path.GetExtension(filePath).ToLowerInvariant();
-            string content = (ext == ".bas" || ext == ".b4a" || ext == ".b4j" || ext == ".b4i")
-                ? CodeUtils.ReadTextSafely(filePath)
-                : File.ReadAllText(filePath);
+            bool isProjectFile = ext == ".b4a" || ext == ".b4j" || ext == ".b4i";
+            bool isBasFile = ext == ".bas";
 
-            return content;
+            if (isProjectFile || isBasFile)
+                return CodeUtils.ReadTextSafely(filePath);
+
+            return File.ReadAllText(filePath);
         }
 
         [McpServerTool, Description("Writes (overwrites) a file with the given content. This replaces the entire file, so read it first with get_file_content if you need to preserve parts of it. Typically used to save an edited B4X module back to disk.")]
@@ -79,14 +115,24 @@ namespace B4XMcpServer.Tools
         }
 
         [McpServerTool, Description("Compiles a B4X project (B4A, B4J, or B4i) using the platform-correct builder selected automatically from the project file extension.\n\n" +
-     "*** CRITICAL: This is the ONLY way to compile. NEVER run shell commands (dir, cd, type, cat, B4ABuilder.exe, etc.). If compilation fails, this tool returns the exact errors with file names, line numbers, and source lines. READ THEM and fix the code — do not try to debug by running commands manually. ***")]
+            "*** CRITICAL: This is the ONLY way to compile. NEVER run shell commands (dir, cd, type, cat, B4ABuilder.exe, etc.). If compilation fails, this tool returns the exact errors with file names, line numbers, and source lines. READ THEM and fix the code — do not try to debug by running commands manually. ***")]
         public static string CompileProject(
-     [Description("Absolute path to the B4X project folder, or to its .b4a/.b4j project file.")] string projectPath,
-     [Description("Timeout in seconds. Default 300.")] int timeoutSeconds = 300)
+            [Description("Absolute path to the B4X project folder, or to its .b4a/.b4j project file.")] string projectPath,
+            [Description("Timeout in seconds. Default 300.")] int timeoutSeconds = 300)
         {
             string? projectFile = File.Exists(projectPath) ? projectPath : ProjectScanner.FindProjectFile(projectPath);
             if (projectFile == null)
                 return $"❌ ERROR: No .b4a/.b4j/.b4i project file found for '{projectPath}'.";
+
+            // ── PRE-COMPILE VALIDATION ────────────────────────────────────
+            var preCheckErrors = ValidateProjectBeforeCompile(projectFile);
+            if (preCheckErrors.Count > 0)
+            {
+                return $"❌ PRE-COMPILE VALIDATION FAILED\n\nThe project file is structurally broken and would fail to compile or even open in the IDE.\n\n" +
+                       $"{string.Join("\n", preCheckErrors)}\n\n" +
+                       $"Fix these issues with write_file or edit_sub, then call compile_project again.";
+            }
+            // ──────────────────────────────────────────────────────────────
 
             var builderPath = BuilderLocator.LocateBuilder(projectFile);
             if (builderPath == null)
@@ -94,26 +140,142 @@ namespace B4XMcpServer.Tools
 
             var buildResult = BuilderRunner.RunBuild(builderPath, projectFile, timeoutSeconds);
 
-            // Fatal error (builder didn't even run)
             if (buildResult.TryGetValue("fatal_error", out var fatal) && fatal != null)
-            {
                 return $"❌ BUILD SYSTEM ERROR\n\n{fatal}\n\nDo NOT try to run the builder manually.";
-            }
 
             bool success = buildResult.TryGetValue("success", out var s) && s is bool sb && sb;
 
             if (!success)
             {
-                // Usa el BuildFormatter que ya tienes — produce Markdown legible con
-                // file, line, source_line, y message para cada error
                 var formattedErrors = BuildFormatter.Format(buildResult);
-
                 return $"❌ COMPILATION FAILED\n\n" +
                        $"DO NOT run shell commands. Read the errors below, fix the code with write_file or edit_sub, then call compile_project again.\n\n" +
                        $"{formattedErrors}";
             }
 
             return $"✅ COMPILATION SUCCESSFUL\nBuilder: {builderPath}\nNo errors.";
+        }
+
+        /// <summary>
+        /// Validates project file structure before attempting to compile.
+        /// Catches broken headers that would make the project unopenable in the IDE.
+        /// </summary>
+        private static List<string> ValidateProjectBeforeCompile(string projectFile)
+        {
+            var errors = new List<string>();
+
+            if (!File.Exists(projectFile))
+            {
+                errors.Add($"Project file not found: {projectFile}");
+                return errors;
+            }
+
+            string raw = File.ReadAllText(projectFile);
+            const string marker = "@EndOfDesignText@";
+            int markerIdx = raw.IndexOf(marker, StringComparison.Ordinal);
+
+            if (markerIdx < 0)
+            {
+                errors.Add("❌ CRITICAL: The project file is corrupted — it's missing its internal section separator. The file cannot be compiled. Restore it from the .bak backup.");
+                return errors;
+            }
+
+            string headerSection = raw.Substring(0, markerIdx);
+            string codeSection = raw.Substring(markerIdx + marker.Length).TrimStart('\r', '\n');
+
+            // Parse header key=value pairs
+            var header = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var line in headerSection.Split('\n'))
+            {
+                var trimmed = line.TrimEnd('\r').Trim();
+                if (string.IsNullOrEmpty(trimmed)) continue;
+                int eq = trimmed.IndexOf('=');
+                if (eq <= 0) continue;
+                header[trimmed.Substring(0, eq).Trim()] = trimmed.Substring(eq + 1).Trim();
+            }
+
+            // Check 1: NumberOfModules must match actual ModuleN entries
+            if (header.TryGetValue("NumberOfModules", out var numModStr) && int.TryParse(numModStr, out int expectedModules))
+            {
+                int actualModules = header.Keys.Count(k => Regex.IsMatch(k, @"^Module\d+$"));
+                if (actualModules != expectedModules)
+                    errors.Add($"❌ NumberOfModules={expectedModules} but found {actualModules} ModuleN entries. Update NumberOfModules to {actualModules}.");
+            }
+            else if (!header.ContainsKey("NumberOfModules"))
+            {
+                int actualModules = header.Keys.Count(k => Regex.IsMatch(k, @"^Module\d+$"));
+                if (actualModules > 0)
+                    errors.Add($"❌ Missing NumberOfModules key. Add: NumberOfModules={actualModules}");
+            }
+
+            // Check 2: NumberOfLibraries must match actual LibraryN entries
+            if (header.TryGetValue("NumberOfLibraries", out var numLibStr) && int.TryParse(numLibStr, out int expectedLibs))
+            {
+                int actualLibs = header.Keys.Count(k => Regex.IsMatch(k, @"^Library\d+$"));
+                if (actualLibs != expectedLibs)
+                    errors.Add($"❌ NumberOfLibraries={expectedLibs} but found {actualLibs} LibraryN entries. Update NumberOfLibraries to {actualLibs}.");
+            }
+
+            // Check 3: NumberOfFiles must match actual FileN entries
+            if (header.TryGetValue("NumberOfFiles", out var numFilesStr) && int.TryParse(numFilesStr, out int expectedFiles))
+            {
+                int actualFiles = header.Keys.Count(k => Regex.IsMatch(k, @"^File\d+$"));
+                if (actualFiles != expectedFiles)
+                    errors.Add($"❌ NumberOfFiles={expectedFiles} but found {actualFiles} FileN entries. Update NumberOfFiles to {actualFiles}.");
+            }
+
+            // Check 4: Module numbering must be sequential starting from 1
+            var moduleNumbers = header.Keys
+                .Where(k => Regex.IsMatch(k, @"^Module\d+$"))
+                .Select(k => int.Parse(Regex.Match(k, @"\d+").Value))
+                .OrderBy(n => n)
+                .ToList();
+            for (int i = 0; i < moduleNumbers.Count; i++)
+            {
+                if (moduleNumbers[i] != i + 1)
+                    errors.Add($"❌ Module numbering is not sequential. Expected Module{i + 1} but found Module{moduleNumbers[i]}. Renumber all ModuleN entries sequentially starting from 1.");
+            }
+
+            // Check 5: Code section must contain at least one Sub
+            if (string.IsNullOrWhiteSpace(codeSection) || !codeSection.Contains("Sub "))
+                errors.Add("⚠️ Warning: Source code section is empty or contains no Sub declarations. The app has no executable code.");
+
+            // Check 6: Referenced modules must exist on disk (auto-append .bas if no extension)
+            string projectDir = Path.GetDirectoryName(projectFile) ?? ".";
+            foreach (var kv in header.Where(kv => Regex.IsMatch(kv.Key, @"^Module\d+$")))
+            {
+                var moduleName = kv.Value;
+                var modulePath = Path.Combine(projectDir, moduleName);
+
+                if (!Path.HasExtension(modulePath))
+                    modulePath += ".bas";
+
+                if (!File.Exists(modulePath))
+                    errors.Add($"❌ Module '{moduleName}' is referenced in {kv.Key} but file not found at: {modulePath}");
+            }
+
+            // Check 7: #Region Manifest Editor must be in metadata section only (NOT in source code)
+            if (codeSection.Contains("#Region Manifest Editor", StringComparison.OrdinalIgnoreCase) ||
+                codeSection.Contains("#Region  Manifest Editor", StringComparison.OrdinalIgnoreCase))
+                errors.Add("❌ FATAL: #Region Manifest Editor found in SOURCE CODE section. It belongs in the PROJECT METADATA section only. Use write_manifest tool to modify it.");
+
+            // Check 8: AddManifestText must be in metadata section only
+            if (codeSection.Contains("AddManifestText", StringComparison.OrdinalIgnoreCase))
+                errors.Add("❌ AddManifestText found in SOURCE CODE section. Manifest modifications belong in the PROJECT METADATA section only, never in code.");
+
+            // Check 9: #Region Project Attributes and #Region Activity Attributes MUST be in source code section
+            bool hasProjectAttrs = codeSection.Contains("#Region  Project Attributes", StringComparison.OrdinalIgnoreCase) ||
+                                   codeSection.Contains("#Region Project Attributes", StringComparison.OrdinalIgnoreCase);
+            bool hasActivityAttrs = codeSection.Contains("#Region  Activity Attributes", StringComparison.OrdinalIgnoreCase) ||
+                                    codeSection.Contains("#Region Activity Attributes", StringComparison.OrdinalIgnoreCase);
+
+            if (!hasProjectAttrs)
+                errors.Add("🛑 FATAL: #Region Project Attributes block is MISSING from the source code section. This block is REQUIRED (#ApplicationLabel, #VersionCode, etc.). Restore it from the .bak backup file.");
+
+            if (!hasActivityAttrs)
+                errors.Add("🛑 FATAL: #Region Activity Attributes block is MISSING from the source code section. This block is REQUIRED (#FullScreen, #IncludeTitle, etc.). Restore it from the .bak backup file.");
+
+            return errors;
         }
 
         [McpServerTool, Description("Decodes a B4X visual layout file into readable JSON: control hierarchy, types, positions (resolved from the correct screen variant, not the misleading top-level template defaults), and properties like text/hint/tag/drawable. Works for both .bal (B4A) and .bjl (B4J) — they share the exact same binary format.")]
@@ -219,7 +381,7 @@ namespace B4XMcpServer.Tools
             public string NewCode { get; set; } = string.Empty;
         }
 
-        [McpServerTool, Description("Replaces the entire body of a single Sub in a B4X module in-place, without touching the rest of the file or its IDE metadata header. Locates the Sub by name using the real B4X parser, so partial/skeleton context is enough to safely target it — you don't need the whole file. If the Sub isn't found, returns the list of Subs that do exist in the file so the caller can retry with the correct name.")]
+        [McpServerTool, Description("Replaces the entire body of a single Sub in a B4X module in-place, without touching the rest of the file. Locates the Sub by name using the real B4X parser, so partial/skeleton context is enough to safely target it. If the Sub isn't found, returns the list of Subs that do exist in the file so the caller can retry with the correct name.")]
         public static string EditSub(EditSubRequest request)
         {
             var filePath = request.FilePath;
@@ -300,7 +462,7 @@ namespace B4XMcpServer.Tools
             public int MaxResults { get; set; } = 200;
         }
 
-        [McpServerTool, Description("Searches for a regex pattern across every .bas module (and optionally the .b4a/.b4j project file) in a B4X project, like grep. Returns each match with its file, line number, and the matching line's text. This is a plain text search (it also matches inside string literals and comments), not semantic — use it to quickly locate where something is mentioned, then use get_file_content or get_full_context with focusSub to see it in real context.")]
+        [McpServerTool, Description("Searches for a regex pattern across every .bas module (and optionally the .b4a/.b4j project file) in a B4X project, like grep. Returns each match with its file, line number, and the matching line's text.")]
         public static string SearchCode(SearchCodeRequest request)
         {
             var projectPath = request.ProjectPath;
@@ -350,7 +512,7 @@ namespace B4XMcpServer.Tools
             }, new JsonSerializerOptions { WriteIndented = true });
         }
 
-        [McpServerTool, Description("Parses a B4X project file's (.b4a/.b4j/.b4i) IDE metadata header into structured JSON: app type, version, referenced libraries, module list, included files, and every other raw key=value setting from the header. Does not touch the code section.")]
+        [McpServerTool, Description("Parses a B4X project file's project metadata into structured JSON: app type, version, referenced libraries, module list, included files, and every other raw key=value setting.")]
         public static string GetProjectConfig(
             [Description("Absolute path to the B4X project folder, or to its .b4a/.b4j/.b4i project file.")] string projectPath)
         {
@@ -395,14 +557,13 @@ namespace B4XMcpServer.Tools
             return JsonSerializer.Serialize(result, new JsonSerializerOptions { WriteIndented = true });
         }
 
-        [McpServerTool, Description("Analyzes a single B4X module (.bas) without needing its full content read separately: lists every Sub (name, parameters, return type, public/private, and whether it looks like an event handler by naming convention e.g. Btn_Click), every Type declaration, and whether Process_Globals/Globals/Class_Globals are present. Also reports any structural parse issues (unclosed blocks, mismatched Type/End Type, etc.) found without compiling.")]
+        [McpServerTool, Description("Analyzes a single B4X module (.bas): lists every Sub (name, parameters, return type, public/private, event handler detection), every Type declaration, and Globals presence. Also reports structural parse issues without compiling.")]
         public static string AnalyzeModule(
             [Description("Absolute path to the .bas module file.")] string filePath)
         {
             if (!File.Exists(filePath))
                 throw new FileNotFoundException($"File not found: {filePath}");
 
-            // Try cache first
             string cacheKey = $"analyze:{filePath}";
             if (CacheManager.TryGetByMtime<string>(filePath, out var cached) && cached != null)
                 return cached;
@@ -439,14 +600,13 @@ namespace B4XMcpServer.Tools
                 parseIssues = issues.Select(i => new { line = i.Line, message = i.Message, severity = i.Severity })
             }, new JsonSerializerOptions { WriteIndented = true });
 
-            // Cache it
             CacheManager.SetByMtime(filePath, result);
             CacheManager.Store(cacheKey, result);
 
             return result;
         }
 
-        [McpServerTool, Description("Runs the B4X structural parser against every module (.bas) in a project WITHOUT compiling, and reports any structural problems found (unclosed Sub/Type/Region blocks, mismatched End statements). This is near-instant compared to a real compile — use it as a quick sanity check before compile_project, or right after generating/editing code to catch obvious mistakes early.")]
+        [McpServerTool, Description("Runs the B4X structural parser against every module (.bas) in a project WITHOUT compiling, and reports any structural problems found (unclosed Sub/Type/Region blocks, mismatched End statements). Near-instant sanity check.")]
         public static string ValidateProject(
             [Description("Absolute path to the B4X project folder, or to its .b4a/.b4j project file.")] string projectPath)
         {
@@ -460,7 +620,6 @@ namespace B4XMcpServer.Tools
             int totalIssues = 0;
             foreach (var f in basFiles)
             {
-                // Try cache first
                 if (CacheManager.TryGetByMtime<CachedParseResult>(f.Path, out var cached) && cached != null)
                 {
                     if (cached.Issues.Count > 0)
@@ -506,7 +665,7 @@ namespace B4XMcpServer.Tools
             }, new JsonSerializerOptions { WriteIndented = true });
         }
 
-        [McpServerTool, Description("Lists every layout file (.bal for B4A, .bjl for B4J) in a project with basic metadata: screen variants (dimensions) and top-level control count, without dumping the full decoded tree of each. Use get_layout_structure afterward on a specific one for full detail.")]
+        [McpServerTool, Description("Lists every layout file (.bal/.bjl/.bil) in a project with basic metadata: screen variants and top-level control count.")]
         public static string ListLayouts(
             [Description("Absolute path to the B4X project folder, or to its .b4a/.b4j project file.")] string projectPath)
         {
@@ -557,7 +716,7 @@ namespace B4XMcpServer.Tools
         private const string ManifestStartMarker = "#Region Manifest Editor";
         private const string ManifestEndMarker = "#End Region";
 
-        [McpServerTool, Description("Extracts the Manifest Editor block from a B4A project file (the #Region Manifest Editor ... #End Region section that controls AndroidManifest.xml generation — permissions, features, SDK versions, etc.).")]
+        [McpServerTool, Description("Extracts the Manifest Editor block from a B4A project file.")]
         public static string GetManifest(
             [Description("Absolute path to the .b4a project file.")] string projectPath)
         {
@@ -575,10 +734,10 @@ namespace B4XMcpServer.Tools
             return JsonSerializer.Serialize(new { projectPath, manifest = block });
         }
 
-        [McpServerTool, Description("Replaces the Manifest Editor block in a B4A project file. Creates a .bak backup of the original file first, so it's always recoverable.")]
+        [McpServerTool, Description("Replaces the Manifest Editor block in a B4A project file. Creates a .bak backup first.")]
         public static string WriteManifest(
             [Description("Absolute path to the .b4a project file.")] string projectPath,
-            [Description("New content for the lines between '#Region Manifest Editor' and '#End Region' (without the markers themselves).")] string manifestContent)
+            [Description("New content for the Manifest Editor block.")] string manifestContent)
         {
             if (!File.Exists(projectPath))
                 throw new FileNotFoundException($"File not found: {projectPath}");

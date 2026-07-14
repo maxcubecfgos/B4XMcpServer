@@ -8,7 +8,15 @@ namespace B4XContext.Services
 {
     public static class ProjectScanner
     {
-        private static readonly string[] IgnoredFolders = new[] { "Objects", "bin", "gen", "obj", ".git" };
+        private static readonly string[] IgnoredFolders = new[]
+        {
+            "Objects", "bin", "gen", "obj", ".git", "temp", "build"
+        };
+
+        private static readonly string[] IgnoredFiles = new[]
+        {
+            "Starter.bas", "Starter.b4a", "Starter.b4j"  // System service modules — never touch
+        };
 
         public static string FindProjectRoot(string startPath)
         {
@@ -35,11 +43,24 @@ namespace B4XContext.Services
             foreach (var f in Directory.EnumerateFiles(projectRoot, "*.*", SearchOption.AllDirectories))
             {
                 var rel = Path.GetRelativePath(projectRoot, f);
-                if (IgnoredFolders.Any(x => rel.Split(Path.DirectorySeparatorChar).Contains(x)))
+
+                // Skip ignored folders (Objects, bin, gen, obj, .git, etc.)
+                if (IgnoredFolders.Any(x => rel.Split(Path.DirectorySeparatorChar).Contains(x, StringComparer.OrdinalIgnoreCase)))
                     continue;
 
+                // Skip IDE metadata files (.meta)
                 var ext = Path.GetExtension(f).ToLowerInvariant();
-                if (ext == ".bas" || ext == ".bal" || ext == ".bjl" || ext == ".bil" || ext == ".b4a" || ext == ".b4j" || ext == ".b4i")
+                if (ext == ".meta")
+                    continue;
+
+                // Skip system service modules that should never be touched
+                var fileName = Path.GetFileName(f);
+                if (IgnoredFiles.Contains(fileName, StringComparer.OrdinalIgnoreCase))
+                    continue;
+
+                // Only include B4X source and layout files
+                if (ext == ".bas" || ext == ".bal" || ext == ".bjl" || ext == ".bil" ||
+                    ext == ".b4a" || ext == ".b4j" || ext == ".b4i")
                 {
                     var pf = new ProjectFile(f)
                     {
