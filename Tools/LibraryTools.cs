@@ -94,21 +94,35 @@ namespace B4XMcpServer.Tools
             }
 
             var dirs = B4aConfig.GetLibraryDirectories(root);
-            var xmlPath = LibraryScanner.FindLibraryXml(libraryName, dirs);
+            var library = LibraryScanner.FindLibrary(libraryName, dirs);
 
-            if (xmlPath == null)
+            if (library == null)
+            {
                 return JsonSerializer.Serialize(new
                 {
                     error = $"Library '{libraryName}' not found in any configured library directory.",
                     searchedDirectories = dirs
                 }, new JsonSerializerOptions { WriteIndented = true });
+            }
 
-            string cacheKey = $"libs:docs:{xmlPath}:{typeName ?? ""}";
-            if (CacheManager.TryGetByMtime<string>(xmlPath, out var cached) && cached != null &&
-                string.IsNullOrEmpty(typeName)) // Don't cache filtered queries
-                return cached;
+            string cacheFile =
+                library.IsB4XLib
+                    ? library.B4XLibPath
+                    : library.XmlPath;
 
-            var docs = LibraryScanner.GetLibraryDocs(xmlPath, typeName);
+            string cacheKey =
+                $"libs:docs:{cacheFile}:{typeName ?? ""}";
+
+            if (string.IsNullOrEmpty(typeName))
+            {
+                if (CacheManager.TryGetByMtime<string>(cacheFile, out var cached)
+                    && cached != null)
+                {
+                    return cached;
+                }
+            }
+
+            var docs = LibraryScanner.GetLibraryDocs(library, typeName);
 
             var result = JsonSerializer.Serialize(new
             {
@@ -118,20 +132,40 @@ namespace B4XMcpServer.Tools
                 memberCount = docs.Members.Count,
                 members = docs.Members.Select(m => new
                 {
+                    module = string.IsNullOrWhiteSpace(m.Module)
+        ? null
+        : m.Module,
+
                     kind = m.Kind,
-                    signature = m.Kind switch
-                    {
-                        "method" => $"{m.Name}({m.Parameters ?? ""})" + (m.ReturnType != null ? $" → {m.ReturnType}" : ""),
-                        "property" => $"{m.Name}: {m.ReturnType ?? "?"}",
-                        "event" => $"{m.Name}({m.Parameters ?? ""})",
-                        _ => m.Name
-                    },
+
+                    signature =
+        !string.IsNullOrEmpty(m.Signature)
+            ? m.Signature
+            : m.Kind switch
+            {
+                "method" =>
+                    $"{m.Name}({m.Parameters ?? ""})" +
+                    (m.ReturnType != null
+                        ? $" → {m.ReturnType}"
+                        : ""),
+
+                "property" =>
+                    $"{m.Name}: {m.ReturnType ?? "?"}",
+
+                "event" =>
+                    $"{m.Name}({m.Parameters ?? ""})",
+
+                _ => m.Name
+            },
+
                     description = m.Description
                 })
             }, new JsonSerializerOptions { WriteIndented = true });
 
             if (string.IsNullOrEmpty(typeName))
-                CacheManager.SetByMtime(xmlPath, result);
+            {
+                CacheManager.SetByMtime(cacheFile, result);
+            }
 
             return result;
         }
