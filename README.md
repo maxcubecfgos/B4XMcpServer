@@ -71,6 +71,20 @@ This was developed and tested with free-tier AI models — the kind that halluci
 
 With stronger models, it works even better. Fewer mistakes, fewer compile-fix cycles, faster results. But even with the free models, it gets the job done without corrupting your project.
 
+## Auto-installing AGENTS.md
+
+When `B4XMcpServer.exe` is launched manually (from a terminal or by double-clicking) and the current directory contains a `.b4a`, `.b4j`, or `.b4i` project file, the executable will automatically create an `AGENTS.md` in that directory — or append a `B4X MCP` block to an existing one that lacks the marker — before exiting. This lets agents like FreeBuff or Codebuff discover the helper by reading `AGENTS.md` at session start: no separate configuration needed.
+
+The block is wrapped between `<!-- BEGIN B4X MCP (auto-generated) -->` and `<!-- END B4X MCP (auto-generated) -->` markers and lists every tool exposed by the server with its description, plus a sample invocation pattern and the recommended `compile_project` post-edit verification step.
+
+MCP-aware clients (Claude Desktop, Cursor, Cline…) pipe both stdio streams and skip this auto-install step entirely — they go straight to MCP server mode unchanged.
+
+To re-generate the AGENTS.md block after adding new tools, delete the file and re-run `B4XMcpServer.exe` from the project directory. The block is idempotent across consecutive runs whenever the markers are intact.
+
+### Known limitation
+
+Git Bash / mintty on Windows sometimes reports stdout as redirected even for interactive sessions, causing the installer to fall through to MCP mode. Workaround: run the executable from Windows PowerShell or cmd.
+
 ## License
 
 MIT License. See LICENSE for details.

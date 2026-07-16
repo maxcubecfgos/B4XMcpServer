@@ -1,8 +1,35 @@
-﻿using Microsoft.Extensions.DependencyInjection;
+﻿using System.Text;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using B4XMcpServer.Services;
 using B4XMcpServer.Tools;
 
+// Force UTF-8 on stdout so JSON output preserves non-ASCII characters on
+// Windows hosts that default to a legacy code page (cp1252 / cp850). Cheap
+// and harmless on any other platform.
+Console.OutputEncoding = Encoding.UTF8;
+
+// Installer first: only when invoked with no args AND stdio not fully piped.
+// Manual launch from a terminal or by double-clicking triggers it; MCP-aware
+// clients (Claude Desktop, Cursor, ...) pipe both streams and pass no args,
+// but the gate discriminates them via the pipe check.
+if (args.Length == 0
+    && (!Console.IsInputRedirected || !Console.IsOutputRedirected)
+    && B4xProjectInstaller.TryRun() == B4xProjectInstaller.Outcome.Installed)
+{
+    return 0;
+}
+
+// CLI dispatcher: when any args are passed, route argv[0] to a built-in
+// command (--help, --list-tools, --describe ...) or to a known tool. Returns
+// the exit code directly and never falls through to the MCP host.
+if (args.Length >= 1)
+{
+    return await CliDispatcher.TryRun(args);
+}
+
+// MCP host: Claude Desktop / Cursor / Cline / etc. pipe stdio and pass no args.
 var builder = Host.CreateApplicationBuilder(args);
 
 // El transporte MCP stdio usa stdout exclusivamente para el protocolo JSON-RPC.
@@ -27,3 +54,4 @@ builder.Services
     .WithTools<RuntimeTools>();
 
 await builder.Build().RunAsync();
+return 0;

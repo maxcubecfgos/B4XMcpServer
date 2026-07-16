@@ -48,11 +48,11 @@ namespace B4XMcpServer.Tools
                 },
                 new
                 {
-                    title = "NEVER create Main.bas unless the project already has one",
+                    title = "NEVER create Main.bas — write_file HARD-BLOCKS the attempt",
                     severity = "CRITICAL",
-                    description = "Most B4X projects have the main activity code inside the .b4a/.b4j file itself, NOT in a separate Main.bas. Check get_project_structure first — if Main.bas is not listed, the main code goes in the project file's source code section.",
-                    example = "DON'T: write_file('Main.bas', ...) when Main.bas doesn't exist in the project. DO: use edit_sub or write_file on the .b4a/.b4j file's source code section.",
-                    fix = "Always call get_project_structure first. If Main.bas is not in the file list, put all Activity_Create, Process_Globals, etc. directly in the .b4a/.b4j file."
+                    description = "In B4X, the .b4a / .b4j / .b4i file at the project root IS the Main module \u2014 REGARDLESS of what it is named (MiApp.b4a, Project.b4a, MainApp.b4a, anything). Its source code section is where Activity_Create, Process_Globals, AppStart, and every other Sub lives. Adding a separate Main.bas in the same directory corrupts the project instantly (duplicate Main, compile errors, IDE confusion). write_file has a hard guard against this; if it returned an error mentioning Main.bas, switch to edit_sub on the actual project file.",
+                    example = "DON'T: write_file('Main.bas', ...). DON'T: even read Main.bas as if it were the main module. DO: get_project_structure first; if Main.bas isn't in the file list, the code lives in whichever .b4a / .b4j / .b4i the project is using, and you must edit_sub on that exact file.",
+                    fix = "Call get_project_structure to confirm what files exist. If Main.bas is NOT in the list, put all activity code in the project file's source code section using edit_sub. The project file is simply whichever .b4a / .b4j / .b4i lives at the project root \u2014 its name has no bearing on its role as the Main module. The write_file tool returns a hard-block error if it tries to create Main.bas in any directory that already has a .b4a / .b4j / .b4i."
                 },
                 new
                 {
