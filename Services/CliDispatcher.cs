@@ -9,6 +9,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Threading.Tasks;
 using B4XMcpServer.Utils;
+using Microsoft.Extensions.DependencyInjection;
 using ModelContextProtocol.Server;
 
 namespace B4XMcpServer.Services
@@ -82,7 +83,7 @@ namespace B4XMcpServer.Services
         // ── Catalog records ─────────────────────────────────────────
         private sealed record ParamDef(string Name, Type Type, string Description, bool Required, object? DefaultValue);
 
-        private sealed record ToolEntry(string Name, string Description, IReadOnlyList<ParamDef> Parameters, MethodInfo Method);
+        private sealed record ToolEntry(string Name, string Description, IReadOnlyList<ParamDef> Parameters, MethodInfo Method, Type DeclaringType);
 
         // ── Catalog build ───────────────────────────────────────────
         // Reflects over SupportedTools.AllTypes once per process invocation.
@@ -114,7 +115,7 @@ namespace B4XMcpServer.Services
                         DefaultValue: p.HasDefaultValue ? p.DefaultValue : null
                     )).ToList();
 
-                    entries.Add(new ToolEntry(name, description, parameters, method));
+                    entries.Add(new ToolEntry(name, description, parameters, method, method.DeclaringType!));
                 }
             }
             return entries;
@@ -237,9 +238,36 @@ namespace B4XMcpServer.Services
                 return ExitUsage;
             }
 
+            // Build a one-shot DI graph shared by every method on the same tool
+            // class. ToolHostServices is the same helper Program.cs uses for the
+            // MCP host, so CLI and MCP paths construct identical object graphs —
+            // including cache managers and any future repository-level state.
+            // BuildServiceProvider() validates scopes on dispose; the lifetime is
+            // process-bounded, so leaving it alive until InvokeToolAsync returns
+            // is safe and the cheapest option given each CLI invocation runs in
+            // a fresh process. Note: ServiceCollection itself is intentionally
+            // not wrapped in `using` — in the resolved package chain it does
+            // not implement IDisposable, and even where it does Dispose is a
+            // no-op (only clears internal lists, holds no unmanaged resources).
+            var services = new ServiceCollection();
+            ToolHostServices.RegisterCoreRepositories(services);
+            using var sp = services.BuildServiceProvider();
+            var instanceCache = new Dictionary<Type, object>();
+
             try
             {
-                object? result = entry.Method.Invoke(null, callArgs);
+                // Static methods (none today, but supported for future expansion)
+                // keep passing null. Instance methods need a real instance so .NET
+                // can match the method's `this` parameter with the resolved object
+                // — otherwise MethodInfo.Invoke raises TargetException:
+                // "Non-static method requires a target".
+                object? target = entry.Method.IsStatic
+                    ? null
+                    : (instanceCache.TryGetValue(entry.DeclaringType, out var cached)
+                        ? cached
+                        : instanceCache[entry.DeclaringType] = ActivatorUtilities.CreateInstance(sp, entry.DeclaringType));
+
+                object? result = entry.Method.Invoke(target, callArgs);
 
                 if (result is Task task)
                 {

@@ -2,7 +2,6 @@
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
-using B4XMcpServer.Repositories;
 using B4XMcpServer.Services;
 using B4XMcpServer.Tools;
 
@@ -42,8 +41,9 @@ builder.Logging.AddConsole(options =>
 });
 
 // Register repositories as singletons so tools can request them via DI.
-builder.Services.AddSingleton<IFileRepository, FileRepository>();
-builder.Services.AddSingleton<IProjectRepository, ProjectRepository>();
+// Shared with CliDispatcher (argv-driven path) via ToolHostServices so both
+// entry points wire the same object graph.
+ToolHostServices.RegisterCoreRepositories(builder.Services);
 
 var mcpBuilder = builder.Services
     .AddMcpServer()
