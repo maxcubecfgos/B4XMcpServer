@@ -137,9 +137,11 @@ namespace B4XMcpServer.Utils
             reason =
                 $"❌ CRITICAL: Creating 'Main.bas' is blocked because '{projectName}' exists in " +
                 $"the same directory and IS the project's Main module. " +
-                $"In B4X the .b4a/.b4j/.b4i file's source code section is where every Sub " +
-                $"(Activity_Create, Process_Globals, AppStart, etc.) lives — there is no separate " +
-                $"Main.bas unless YOU (the human) explicitly authored one already. " +
+                $"In B4X the .b4a / .b4j / .b4i file at the project root is the Main module — " +
+                $"REGARDLESS of what it is named (MiApp.b4a, Project.b4a, MainApp.b4a, anything). " +
+                $"Every Sub (Activity_Create, Process_Globals, AppStart, etc.) lives in its source " +
+                $"code section — there is no separate Main.bas unless YOU (the human) explicitly " +
+                $"authored one already. " +
                 $"Use edit_sub on the project file instead: " +
                 $"edit_sub --filePath=\"{projectFile}\" --subName=\"Activity_Create\" --newCode=\"...\"";
             return true;

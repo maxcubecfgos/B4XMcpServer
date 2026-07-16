@@ -144,9 +144,9 @@ namespace B4XMcpServer.Tools
                     error = blockReason,
                     hints = new[]
                     {
-                        "The .b4a/.b4j/.b4i file IS the project's Main module — Activity_Create / Process_Globals / AppStart live in its source code section.",
+                        "The .b4a/.b4j/.b4i file IS the project's Main module — REGARDLESS of what it is named (MiApp.b4a, Project.b4a, MainApp.b4a, anything). Activity_Create / Process_Globals / AppStart live in its source code section.",
                         "To add a Sub to the Main module, use edit_sub on the project file (NOT write_file).",
-                        "Call get_project_structure first to confirm which files exist; if Main.bas is not listed, the main code goes in the project file.",
+                        "Call get_project_structure first to confirm which files exist; if Main.bas is not listed, the main code goes in whichever .b4a / .b4j / .b4i sits at the project root.",
                         "If you previously corrupted the project by creating Main.bas, remove it manually after restoring the project file from its .bak backup."
                     }
                 }, JsonOptions.Default);
