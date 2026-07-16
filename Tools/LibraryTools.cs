@@ -423,6 +423,15 @@ namespace B4XMcpServer.Tools
             [Description("Absolute path to the .b4a/.b4j/.b4i project file, or to the project folder.")] string projectFile,
             [Description("Library name to disable (exact name as shown in list_project_libraries).")] string libraryName)
         {
+            // User-feedback (AI external, round 2): see EnableLibrary for the same
+            // rationale — keep both library-modifying tools' path validation symmetric
+            // so the failure mode is identical and predictable. Without this guard a
+            // relative path (e.g. ".", "./MyApp.b4j", "MyApp") would later surface as
+            // a confusing FileNotFoundException from File.Copy(.bak) or
+            // File.WriteAllText(projectFile), with no hint that the actual problem was
+            // a non-absolute path. Reject up-front so the caller gets a clean error.
+            PathSecurity.ValidateAbsolutePath(projectFile, nameof(projectFile));
+
             // If a directory was passed, find the project file
             if (Directory.Exists(projectFile))
             {
