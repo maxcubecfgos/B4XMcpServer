@@ -1110,9 +1110,9 @@ namespace B4XMcpServer.Tools
             }, JsonOptions.Default);
         }
 
-        [McpServerTool, Description("Parses a B4X project file's project metadata into structured JSON: app type, version, referenced libraries, module list, included files, and every other raw key=value setting.")]
+        [McpServerTool, Description("Parses a B4X project file's project metadata into structured JSON: app type, version, referenced libraries, module list, included files, and every other raw key=value setting. Accepts the project FOLDER or the project FILE — both work. This tool is about the PROJECT as a whole (metadata, libs, modules), NOT about a single .bas module — for that use analyze_module.")]
         public static string GetProjectConfig(
-            [Description("Absolute path to the B4X project folder, or to its .b4a/.b4j/.b4i project file.")] string projectPath)
+            [Description("Absolute path to the B4X project folder, or to its .b4a/.b4j/.b4i project file. For inspecting a single .bas module use analyze_module instead — this tool's projectPath is the project root, not a module file.")] string projectPath)
         {
             PathSecurity.ValidateAbsolutePath(projectPath, nameof(projectPath));
 
@@ -1166,9 +1166,9 @@ namespace B4XMcpServer.Tools
             return configJson;
         }
 
-        [McpServerTool, Description("Analyzes a single B4X module (.bas): lists every Sub (name, parameters, return type, public/private, event handler detection), every Type declaration, and Globals presence. Also reports structural parse issues without compiling.")]
+        [McpServerTool, Description("Analyzes a SINGLE .bas module file: lists every Sub (name, parameters, return type, public/private, event handler detection), every Type declaration, and Globals presence. Also reports structural parse issues without compiling.")]
         public static string AnalyzeModule(
-            [Description("Absolute path to the .bas module file.")] string filePath)
+            [Description("Absolute path to a single .bas module file. This tool takes ONE MODULE, not the whole project — for project-wide metadata (libs, NumberOfModules, etc.) use get_project_config with projectPath instead. The naming distinction (filePath vs projectPath) is intentional: analyze_module = file, get_project_config = project.")] string filePath)
         {
             PathSecurity.ValidateAbsolutePath(filePath, nameof(filePath));
 
