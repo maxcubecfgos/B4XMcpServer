@@ -15,12 +15,30 @@ namespace B4XMcpServer.Utils
         /// </summary>
         public static void ValidateAbsolutePath(string path, string paramName = "path")
         {
+            // Round-4 polish: distinguish null (the CLI flag wasn't recognised and the
+            // dispatcher defaulted the param to null), empty/whitespace (user passed --key=
+            // with nothing after the =), and non-rooted (user passed a relative path).
+            // Mixing them into one "Path cannot be empty." swallowed the diagnostic and
+            // made AIs and humans chase the wrong fix. Each branch now spells out exactly
+            // what went wrong and what to do next.
+
+            if (path is null)
+                throw new ArgumentException(
+                    $"Parameter '{paramName}' was not supplied (got null). The CLI flag you used was not recognised as a synonym for canonical '--{paramName}'. " +
+                    $"Run 'B4XMcpServer.exe --list-tools' and 'B4XMcpServer.exe --describe <tool>' to see the exact canonical flag name and accepted aliases.",
+                    paramName);
+
             if (string.IsNullOrWhiteSpace(path))
-                throw new ArgumentException("Path cannot be empty.", paramName);
+                throw new ArgumentException(
+                    $"Parameter '{paramName}' was supplied as empty or whitespace. Did you forget the value after '='?  (e.g. use --{paramName}=C:\\Path\\To\\File, not --{paramName}=)",
+                    paramName);
 
             // Reject relative paths — callers should always pass absolute paths.
             if (!Path.IsPathRooted(path))
-                throw new ArgumentException($"Path must be absolute: '{path}'", paramName);
+                throw new ArgumentException(
+                    $"Path '{path}' provided for parameter '{paramName}' must be absolute (e.g. 'C:\\Path' on Windows, '/path' on Unix). " +
+                    $"Relative paths are rejected by design to prevent tooling mistakes.",
+                    paramName);
 
             // Path.GetFullPath resolves any parent-directory segments, so the only
             // thing left to verify is containment (see ValidateWithinBaseDirectory).

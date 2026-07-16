@@ -111,7 +111,11 @@ namespace B4XMcpServer.Services
                         Name: p.Name!,
                         Type: p.ParameterType,
                         Description: p.GetCustomAttribute<DescriptionAttribute>()?.Description?.Trim() ?? string.Empty,
-                        Required: !p.HasDefaultValue && !IsAlwaysNullable(p.ParameterType),
+                        Required: p.HasDefaultValue
+                        ? false
+                        : (p.ParameterType == typeof(string)
+                            ? true
+                            : !IsAlwaysNullable(p.ParameterType)),
                         DefaultValue: p.HasDefaultValue ? p.DefaultValue : null
                     )).ToList();
 
@@ -350,39 +354,110 @@ namespace B4XMcpServer.Services
                 return args;
             }
 
-            // Round-3 polish: AI clients sometimes infer alternate parameter names from the
-            // [Description(...)] text rather than the SDK-marshalled parameter name. Accept the
-            // common synonyms `moduleName` (Canonical=filePath, used by analyze_module) and
-            // `layoutFile` (Canonical=layoutPath, used by get_layout_structure) as non-strict
-            // fallbacks when the canonical name is absent. Canonical still wins when both are
-            // present. The list is conservative — add aliases only when an AI session has
-            // produced reproducible confusion, never preemptively.
-            var aliasByCanonical = new System.Collections.Generic.Dictionary<string, string>(System.StringComparer.OrdinalIgnoreCase)
+            // Round-4 polish (expanded from round-3's 2-entry conservative table to 10 canonical
+            // names, each with up to 3 synonyms). AI clients and human CLI users often infer
+            // alternate parameter names from the [Description(...)] text, from common command-
+            // line conventions (--file, --path, --query), or from a related tool seen earlier
+            // (e.g. search_code uses --pattern, so search_library was being called with
+            // --pattern). Canonical still wins when both are present; aliases are tried in
+            // declared order and the first match wins.
+            //
+            // Keys are CANONICAL names that must match the C# parameter name on the tool.
+            // Values are ALL synonyms the dispatcher will accept (in addition to canonical).
+            var aliasByCanonical = new System.Collections.Generic.Dictionary<string, string[]>(System.StringComparer.OrdinalIgnoreCase)
             {
-                ["filePath"] = "moduleName",
-                ["layoutPath"] = "layoutFile",
+                // File-path family (get_file_content / analyze_module / edit_* / write_file).
+                ["filePath"]    = new[] { "moduleName", "file", "path" },
+                // Layout-path family (get_layout_structure / list_layout_controls / layout_*_control).
+                ["layoutPath"]  = new[] { "layoutFile", "layout" },
+                // Project-path family (compile_project / validate_project / get_project_config /
+                // get_project_structure / get_manifest / write_manifest / validate_event_handlers).
+                // Accept '--path=' as a synonym; safe because no tool currently has BOTH filePath
+                // AND projectPath as separate required params (each tool has exactly one or the other).
+                ["projectPath"] = new[] { "path" },
+                // EnableLibrary / DisableLibrary use 'projectFile' (not 'projectPath'); accept both.
+                ["projectFile"] = new[] { "projectPath", "project" },
+                // Library inspection family (LibraryTools).
+                ["libraryName"] = new[] { "library" },
+                ["typeName"]    = new[] { "type" },
+                ["eventName"]   = new[] { "event" },
+                // Parity with search_code (which uses --pattern): search_library's first param
+                // is internally named 'query' but humans naturally type --pattern first.
+                ["query"]       = new[] { "pattern" },
+                // Layout control management (LayoutTools).
+                ["controlType"] = new[] { "type" },
+                ["controlName"] = new[] { "name" },
+                // Workflow + Runtime.
+                ["task"]        = new[] { "input", "description" },
+                ["stackTrace"]  = new[] { "trace" },
             };
+
+            // Round-4 hardening (per-tool, recommended by reviewer): assert that the CURRENT
+            // tool's parameters do not share the same alias. Global alias overlaps BETWEEN
+            // different tools are intentional (e.g. "type" maps to typeName in LibraryTools and
+            // controlType in LayoutTools; "path" maps to filePath in ProjectTools and
+            // projectPath elsewhere). What would be a bug is one tool having TWO of its own
+            // params share an alias — the first one would silently shadow the rest. This guard
+            // catches that exact failure mode, per tool, with zero refactoring of the alias
+            // table to a static field.
+            {
+                var toolAliases = new System.Collections.Generic.HashSet<string>(System.StringComparer.OrdinalIgnoreCase);
+                foreach (var p in entry.Parameters)
+                {
+                    if (aliasByCanonical.TryGetValue(p.Name, out var aliases))
+                    {
+                        foreach (var alias in aliases)
+                        {
+                            if (!toolAliases.Add(alias))
+                            {
+                                throw new InvalidOperationException(
+                                    $"B4XMcpServer error: tool '{entry.Name}' has conflicting alias '--{alias}' across its parameters. " +
+                                    $"An alias can only appear once per tool's parameter list. Fix aliasByCanonical in CliDispatcher.cs.");
+                            }
+                        }
+                    }
+                }
+            }
 
             for (int i = 0; i < entry.Parameters.Count; i++)
             {
                 var p = entry.Parameters[i];
+
+                // 1. Canonical name first (case-insensitive — parsed dict already uses OrdinalIgnoreCase).
                 if (parsed.TryGetValue(p.Name, out var raw))
                 {
                     args[i] = CoerceValue(raw, p.Type);
+                    continue;
                 }
-                else if (aliasByCanonical.TryGetValue(p.Name, out var alias) && parsed.TryGetValue(alias, out raw))
+
+                // 2. Try every configured alias in declared order; first match wins.
+                if (aliasByCanonical.TryGetValue(p.Name, out var aliases))
                 {
-                    args[i] = CoerceValue(raw, p.Type);
+                    bool bound = false;
+                    foreach (var alias in aliases)
+                    {
+                        if (parsed.TryGetValue(alias, out raw))
+                        {
+                            args[i] = CoerceValue(raw, p.Type);
+                            bound = true;
+                            break;
+                        }
+                    }
+                    if (bound) continue;
                 }
-                else if (p.Required)
+
+                // 3. Canonical + aliases exhausted. Surface a CLEAR error rather than letting
+                // a null sail into PathSecurity.ValidateAbsolutePath ("Path cannot be empty.").
+                if (p.Required)
                 {
+                    var attempted = new System.Collections.Generic.List<string> { $"--{p.Name}" };
+                    if (aliasByCanonical.TryGetValue(p.Name, out var aliasesForMsg))
+                        attempted.AddRange(aliasesForMsg.Select(a => $"--{a}"));
                     throw new InvalidOperationException(
-                        $"Missing required parameter: --{p.Name} (type {TypeNameFor(p.Type)})");
+                        $"Missing required parameter: tried {string.Join("/", attempted)} (type {TypeNameFor(p.Type)}). " +
+                        $"Run 'B4XMcpServer.exe --list-tools' or '--describe <tool>' to see the exact canonical flag name.");
                 }
-                else
-                {
-                    args[i] = p.DefaultValue;
-                }
+                args[i] = p.DefaultValue;
             }
             return args;
         }
