@@ -1,16 +1,21 @@
-﻿using ModelContextProtocol.Server;
+﻿using B4XMcpServer.Repositories;
+using B4XMcpServer.Utils;
+using ModelContextProtocol.Server;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.Text.Json;
-using B4XMcpServer.Utils;
 
 namespace B4XMcpServer.Tools
 {
     [McpServerToolType]
     public sealed class LanguageTools
     {
+        public LanguageTools(IFileRepository fileRepository, IProjectRepository projectRepository)
+        {
+        }
+
         [McpServerTool, Description("Returns critical B4A/B4J language gotchas and pitfalls that frequently cause hard-to-debug bugs. Call this when starting work on a B4X project or when encountering unexpected behavior. Covers: case-insensitivity, variable shadowing, File.Exists with DirAssets, reserved keywords (Is, Rnd, ATan2), Color component extraction, Application_Error pitfalls, B4XView API, project file structure rules, and more.")]
-        public static string GetLanguageGotchas()
+        public string GetLanguageGotchas()
         {
             var gotchas = new[]
             {
@@ -176,7 +181,7 @@ namespace B4XMcpServer.Tools
         }
 
         [McpServerTool, Description("Returns the exact signatures for B4X core API: List, Map, Timer, String, Intent, Activity, DateTime, Bit, Regex, Matcher. Use this to verify method names, parameter types, and return types before writing code. Never guess a method signature — check it here first.")]
-        public static string GetCoreApi(
+        public string GetCoreApi(
     [Description("Optional: filter to a specific type. Valid values: List, Map, Timer, String, Intent, Activity, DateTime, Bit, Regex, Matcher. Omit to return all.")] string? typeName = null)
         {
             var api = new Dictionary<string, object>

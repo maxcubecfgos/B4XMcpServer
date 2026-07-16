@@ -7,6 +7,7 @@ using System.Linq;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using B4XMcpServer.Engine;
+using B4XMcpServer.Repositories;
 using B4XMcpServer.Services;
 using B4XMcpServer.Utils;
 
@@ -15,18 +16,27 @@ namespace B4XMcpServer.Tools
     [McpServerToolType]
     public sealed class LibraryTools
     {
+        private readonly IFileRepository _fileRepository;
+        private readonly IProjectRepository _projectRepository;
+
         // Regex timeout protects against catastrophic backtracking on untrusted input.
         private static readonly TimeSpan RegexTimeout = TimeSpan.FromSeconds(2);
 
+        public LibraryTools(IFileRepository fileRepository, IProjectRepository projectRepository)
+        {
+            _fileRepository = fileRepository;
+            _projectRepository = projectRepository;
+        }
+
         [McpServerTool, Description("Lists all libraries referenced in a B4X project file (.b4a/.b4j/.b4i): reads the Library1, Library2... keys from the IDE metadata header. Returns the library names in order.")]
-        public static string ListProjectLibraries(
+        public string ListProjectLibraries(
             [Description("Absolute path to the B4X project folder, or to its .b4a/.b4j/.b4i project file.")] string projectPath)
         {
-            string? projectFile = File.Exists(projectPath) ? projectPath : ProjectScanner.FindProjectFile(projectPath);
+            string? projectFile = _fileRepository.Exists(projectPath) ? projectPath : _projectRepository.FindProjectFile(projectPath);
             if (projectFile == null)
                 throw new FileNotFoundException($"No .b4a/.b4j/.b4i project file found for '{projectPath}'.");
 
-            string raw = File.ReadAllText(projectFile);
+            string raw = _fileRepository.ReadTextWithHeader(projectFile);
             const string marker = "@EndOfDesignText@";
             int markerIdx = raw.IndexOf(marker, StringComparison.Ordinal);
             string headerSection = markerIdx >= 0 ? raw.Substring(0, markerIdx) : raw;
@@ -58,13 +68,13 @@ namespace B4XMcpServer.Tools
         }
 
         [McpServerTool, Description("Lists every available library found in all configured library folders (B4A, B4J, AdditionalLibrariesFolder from IDE settings, plus project-local Libraries/). Includes name and version.")]
-        public static string ListAvailableLibraries(
+        public string ListAvailableLibraries(
             [Description("Absolute path to the B4X project folder, or to its .b4a/.b4j/.b4i project file.")] string? projectPath = null)
         {
             string? root = null;
             if (!string.IsNullOrEmpty(projectPath))
             {
-                root = Directory.Exists(projectPath) ? projectPath : ProjectScanner.FindProjectRoot(projectPath);
+                root = Directory.Exists(projectPath) ? projectPath : _projectRepository.FindProjectRoot(projectPath);
             }
 
             string cacheKey = $"libs:list:{root ?? "global"}";
@@ -86,7 +96,7 @@ namespace B4XMcpServer.Tools
         }
 
         [McpServerTool, Description("Returns the documented methods, properties, and events of a B4X library in compact format: kind (method/property/event), name, return type, parameters, and a one-line description. Use this to discover what a library can do before writing code that uses it.")]
-        public static string GetLibraryDocs(
+        public string GetLibraryDocs(
             [Description("Library name (e.g. 'Core', 'XUI', 'XUI Views', 'StringUtils')")] string libraryName,
             [Description("Optional: filter to a specific class/type name within the library (e.g. 'B4XView', 'BitmapCreator')")] string? typeName = null,
             [Description("Absolute path to the B4X project folder (optional, helps find project-local libraries)")] string? projectPath = null)
@@ -94,7 +104,7 @@ namespace B4XMcpServer.Tools
             string? root = null;
             if (!string.IsNullOrEmpty(projectPath))
             {
-                root = Directory.Exists(projectPath) ? projectPath : ProjectScanner.FindProjectRoot(projectPath);
+                root = Directory.Exists(projectPath) ? projectPath : _projectRepository.FindProjectRoot(projectPath);
             }
 
             var dirs = B4aConfig.GetLibraryDirectories(root);
@@ -184,7 +194,7 @@ namespace B4XMcpServer.Tools
         }
 
         [McpServerTool, Description("Returns the event declarations for a given library/type. Use this to discover the exact parameter names and types an event expects before writing its handler Sub.")]
-        public static string GetLibraryEvents(
+        public string GetLibraryEvents(
             [Description("Library name (e.g. 'jFX')")] string libraryName,
             [Description("Type/class name within the library (e.g. 'Panel', 'TabPane')")] string typeName,
             [Description("Absolute path to the B4X project folder (optional, helps find project-local libraries)")] string? projectPath = null)
@@ -192,7 +202,7 @@ namespace B4XMcpServer.Tools
             string? root = null;
             if (!string.IsNullOrEmpty(projectPath))
             {
-                root = Directory.Exists(projectPath) ? projectPath : ProjectScanner.FindProjectRoot(projectPath);
+                root = Directory.Exists(projectPath) ? projectPath : _projectRepository.FindProjectRoot(projectPath);
             }
 
             var dirs = B4aConfig.GetLibraryDirectories(root);
@@ -233,7 +243,7 @@ namespace B4XMcpServer.Tools
         }
 
         [McpServerTool, Description("Compares a single user-written Sub signature against the expected library event signature for a given library/type/event. Returns whether it matches and a list of differences.")]
-        public static string CompareWithLibrarySignature(
+        public string CompareWithLibrarySignature(
             [Description("Library name (e.g. 'jFX')")] string libraryName,
             [Description("Type/class name within the library (e.g. 'Panel')")] string typeName,
             [Description("Event name (e.g. 'Resize')")] string eventName,
@@ -243,7 +253,7 @@ namespace B4XMcpServer.Tools
             string? root = null;
             if (!string.IsNullOrEmpty(projectPath))
             {
-                root = Directory.Exists(projectPath) ? projectPath : ProjectScanner.FindProjectRoot(projectPath);
+                root = Directory.Exists(projectPath) ? projectPath : _projectRepository.FindProjectRoot(projectPath);
             }
 
             var dirs = B4aConfig.GetLibraryDirectories(root);
@@ -275,7 +285,7 @@ namespace B4XMcpServer.Tools
         }
 
         [McpServerTool, Description("Searches all available library documentation for methods, properties, or events matching a query string. Searches in member names, type names, and descriptions. Use this to find which library provides a specific feature, or to discover how to use a method.")]
-        public static string SearchLibrary(
+        public string SearchLibrary(
             [Description("Search query: method name, property name, event name, or keyword")] string query,
             [Description("Absolute path to the B4X project folder (optional, helps search project-local libraries)")] string? projectPath = null)
         {
@@ -285,7 +295,7 @@ namespace B4XMcpServer.Tools
             string? root = null;
             if (!string.IsNullOrEmpty(projectPath))
             {
-                root = Directory.Exists(projectPath) ? projectPath : ProjectScanner.FindProjectRoot(projectPath);
+                root = Directory.Exists(projectPath) ? projectPath : _projectRepository.FindProjectRoot(projectPath);
             }
 
             string cacheKey = $"libs:search:{query.ToLowerInvariant()}:{root ?? "global"}";
@@ -307,7 +317,7 @@ namespace B4XMcpServer.Tools
         }
 
         [McpServerTool, Description("Enables a library in a B4X project by adding it to the LibraryN keys in the project file header. If already enabled, does nothing. Creates .bak backup first. Refuses to enable a library that isn't found in any configured library directory (B4A, B4J, AdditionalLibraries, project-local Libraries/) — so a typo can't later break compilation.")]
-        public static string EnableLibrary(
+        public string EnableLibrary(
         [Description("Absolute path to the .b4a/.b4j/.b4i project file, or to the project folder.")] string projectFile,
         [Description("Library name to enable (must match exactly as shown in list_project_libraries or list_available_libraries).")] string libraryName)
         {
@@ -322,13 +332,13 @@ namespace B4XMcpServer.Tools
             // If a directory was passed, find the project file
             if (Directory.Exists(projectFile))
             {
-                var found = ProjectScanner.FindProjectFile(projectFile);
+                var found = _projectRepository.FindProjectFile(projectFile);
                 if (found == null)
                     throw new FileNotFoundException($"No .b4a/.b4j/.b4i project file found in '{projectFile}'.");
                 projectFile = found;
             }
 
-            if (!File.Exists(projectFile))
+            if (!_fileRepository.Exists(projectFile))
                 throw new FileNotFoundException($"Project file not found: {projectFile}");
 
             // Audit-fixed check ordering: read the project header FIRST and short-circuit
@@ -340,7 +350,7 @@ namespace B4XMcpServer.Tools
             // src folder isn't registered in B4aConfig). The existence validation still
             // runs when adding a NEW library, so typos that would silently add a fake
             // `LibraryN=jrandom` entry to the project header are still caught.
-            string raw = File.ReadAllText(projectFile);
+            string raw = _fileRepository.ReadTextWithHeader(projectFile);
             const string marker = "@EndOfDesignText@";
             int markerIdx = raw.IndexOf(marker, StringComparison.Ordinal);
             string headerSection = markerIdx >= 0 ? raw.Substring(0, markerIdx) : raw;
@@ -367,7 +377,7 @@ namespace B4XMcpServer.Tools
             string? projectRoot = null;
             try
             {
-                projectRoot = ProjectScanner.FindProjectRoot(projectFile);
+                projectRoot = _projectRepository.FindProjectRoot(projectFile);
             }
             catch { /* fall back to global dirs below */ }
             var dirs = B4aConfig.GetLibraryDirectories(projectRoot);
@@ -413,9 +423,8 @@ namespace B4XMcpServer.Tools
             string newHeader = string.Join("\n", lines);
             string newContent = markerIdx >= 0 ? newHeader + "\n" + marker + rest : newHeader;
 
-            File.Copy(projectFile, projectFile + ".bak", overwrite: true);
-            File.WriteAllText(projectFile, newContent);
-            CacheManager.Invalidate(projectFile);
+            _fileRepository.BackupPath(projectFile);
+            _fileRepository.WriteText(projectFile, newContent);
 
             return JsonSerializer.Serialize(new
             {
@@ -428,7 +437,7 @@ namespace B4XMcpServer.Tools
         }
 
         [McpServerTool, Description("Disables (removes) a library from a B4X project. Also renumbers remaining LibraryN entries so there are no gaps. Creates .bak backup first.")]
-        public static string DisableLibrary(
+        public string DisableLibrary(
             [Description("Absolute path to the .b4a/.b4j/.b4i project file, or to the project folder.")] string projectFile,
             [Description("Library name to disable (exact name as shown in list_project_libraries).")] string libraryName)
         {
@@ -443,16 +452,16 @@ namespace B4XMcpServer.Tools
             // If a directory was passed, find the project file
             if (Directory.Exists(projectFile))
             {
-                var found = ProjectScanner.FindProjectFile(projectFile);
+                var found = _projectRepository.FindProjectFile(projectFile);
                 if (found == null)
                     throw new FileNotFoundException($"No .b4a/.b4j/.b4i project file found in '{projectFile}'.");
                 projectFile = found;
             }
 
-            if (!File.Exists(projectFile))
+            if (!_fileRepository.Exists(projectFile))
                 throw new FileNotFoundException($"Project file not found: {projectFile}");
 
-            string raw = File.ReadAllText(projectFile);
+            string raw = _fileRepository.ReadTextWithHeader(projectFile);
             const string marker = "@EndOfDesignText@";
             int markerIdx = raw.IndexOf(marker, StringComparison.Ordinal);
             string headerSection = markerIdx >= 0 ? raw.Substring(0, markerIdx) : raw;
@@ -517,9 +526,8 @@ namespace B4XMcpServer.Tools
             string newHeader = string.Join("\n", renumbered);
             string newContent = markerIdx >= 0 ? newHeader + "\n" + marker + rest : newHeader;
 
-            File.Copy(projectFile, projectFile + ".bak", overwrite: true);
-            File.WriteAllText(projectFile, newContent);
-            CacheManager.Invalidate(projectFile);
+            _fileRepository.BackupPath(projectFile);
+            _fileRepository.WriteText(projectFile, newContent);
 
             return JsonSerializer.Serialize(new
             {

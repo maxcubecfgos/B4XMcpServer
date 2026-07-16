@@ -32,22 +32,27 @@ namespace B4XMcpServer.Services
         private const int ExitToolError = 2;
         private const int ExitUsage = 64; // sysexits.h EX_USAGE
 
-        /// <summary>
-        /// Parses <paramref name="args"/>, dispatches to the right mode, and
-        /// returns the process exit code. Never throws an unhandled exception;
-        /// all error paths return a meaningful exit code.
-        /// </summary>
-        public static async Task<int> TryRun(string[] args)
-        {
-            // Defensive: caller is supposed to gate on args.Length >= 1.
-            if (args == null || args.Length == 0)
-            {
-                Console.Error.WriteLine("CliDispatcher.TryRun called without arguments; this is a programmer error.");
-                return ExitUsage;
-            }
+    // Catalog is built once per process via reflection. The cost is small but
+    // this keeps CLI invocations deterministic and makes the dispatcher easier
+    // to test if ever called multiple times in the same process.
+    private static readonly Lazy<IReadOnlyList<ToolEntry>> CatalogLazy = new(BuildCatalog);
 
-            var catalog = BuildCatalog();
-            string action = args[0];
+    /// <summary>
+    /// Parses <paramref name="args"/>, dispatches to the right mode, and
+    /// returns the process exit code. Never throws an unhandled exception;
+    /// all error paths return a meaningful exit code.
+    /// </summary>
+    public static async Task<int> TryRun(string[] args)
+    {
+        // Defensive: caller is supposed to gate on args.Length >= 1.
+        if (args == null || args.Length == 0)
+        {
+            Console.Error.WriteLine("CliDispatcher.TryRun called without arguments; this is a programmer error.");
+            return ExitUsage;
+        }
+
+        var catalog = CatalogLazy.Value;
+        string action = args[0];
 
             switch (action)
             {

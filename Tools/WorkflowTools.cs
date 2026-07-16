@@ -1,3 +1,4 @@
+using B4XMcpServer.Repositories;
 using B4XMcpServer.Services;
 using B4XMcpServer.Utils;
 using ModelContextProtocol.Server;
@@ -18,6 +19,13 @@ namespace B4XMcpServer.Tools
     [McpServerToolType]
     public sealed class WorkflowTools
     {
+        private readonly IProjectRepository _projectRepository;
+
+        public WorkflowTools(IProjectRepository projectRepository)
+        {
+            _projectRepository = projectRepository;
+        }
+
         /// <summary>
         /// Returns a recommended sequence of MCP tool calls for the given task.
         /// This reduces guesswork, avoids redundant calls, and keeps the AI on the
@@ -28,7 +36,7 @@ namespace B4XMcpServer.Tools
             "Describe the task in plain English and (optionally) pass the project path. " +
             "You will get back a detected intent, a confidence level, an explanation, " +
             "and a step-by-step plan of tool calls to execute. Follow the steps in order.")]
-        public static string GetWorkflowGuide(
+        public string GetWorkflowGuide(
             [Description("Plain-English description of what you want to accomplish, e.g. 'Add a Button to Main layout and handle its click'.")] string task,
             [Description("Optional: absolute path to the B4X project folder or its .b4a/.b4j/.b4i file. If omitted, the guide will be generic and may ask you to provide it.")] string? projectPath = null)
         {
@@ -42,9 +50,9 @@ namespace B4XMcpServer.Tools
                 PathSecurity.ValidateAbsolutePath(projectPath, nameof(projectPath));
                 resolvedRoot = Directory.Exists(projectPath)
                     ? projectPath
-                    : ProjectScanner.FindProjectRoot(projectPath);
+                    : _projectRepository.FindProjectRoot(projectPath);
                 resolvedProjectFile = resolvedRoot != null
-                    ? ProjectScanner.FindProjectFile(resolvedRoot)
+                    ? _projectRepository.FindProjectFile(resolvedRoot)
                     : null;
             }
 
@@ -467,19 +475,13 @@ namespace B4XMcpServer.Tools
                 case "create_module":
                     Add(steps, ref stepNumber, "GetProjectStructure", "Confirm project root and choose the new module path.",
                         new() { ["projectPath"] = Placeholder("<projectPath>") });
-                    Add(steps, ref stepNumber, "CreateBasModule", "Create the .bas file with the correct IDE header.",
+                    Add(steps, ref stepNumber, "CreateBasModule", "Show the manual steps the user must follow in the B4X IDE to create the module safely.",
                         new()
                         {
                             ["filePath"] = Placeholder("<filePath>"),
                             ["moduleType"] = Placeholder("<activity|class>")
                         });
-                    Add(steps, ref stepNumber, "RegisterModuleInProject", "Register the module in the project metadata.",
-                        new()
-                        {
-                            ["projectPath"] = Placeholder("<projectPath>"),
-                            ["modulePath"] = Placeholder("<filePath>")
-                        });
-                    Add(steps, ref stepNumber, "CompileProject", "Compile to verify the change.",
+                    Add(steps, ref stepNumber, "CompileProject", "After the user has created and registered the module in the IDE, compile to verify.",
                         new() { ["projectPath"] = Placeholder("<projectPath>") });
                     break;
 

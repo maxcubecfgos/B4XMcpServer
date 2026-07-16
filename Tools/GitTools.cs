@@ -1,18 +1,23 @@
-﻿using ModelContextProtocol.Server;
+﻿using B4XMcpServer.Repositories;
+using B4XMcpServer.Services;
+using ModelContextProtocol.Server;
 using System;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.IO;
 using System.Threading.Tasks;
-using B4XMcpServer.Services;
 
 namespace B4XMcpServer.Tools
 {
     [McpServerToolType]
     public sealed class GitTools
     {
+        public GitTools(IFileRepository fileRepository, IProjectRepository projectRepository)
+        {
+        }
+
         [McpServerTool, Description("Shows git diff --stat for the repository containing the given path. mode='unstaged' (default, working tree changes not yet staged), mode='staged' (changes added with git add), or a revision range like 'HEAD~1..HEAD' or 'main..feature'. Returns file names and change counts (fast, won't time out).")]
-        public static async Task<string> GitDiff(
+        public async Task<string> GitDiff(
             [Description("Absolute path to any file or folder inside the git repo.")] string projectPath,
             [Description("Diff mode: 'unstaged' (default), 'staged' (--cached), or a git revision range like 'HEAD~1..HEAD'.")] string mode = "unstaged",
             [Description("Optional: limit diff to a specific file path relative to repo root.")] string? filePath = null)
@@ -39,7 +44,7 @@ namespace B4XMcpServer.Tools
         }
 
         [McpServerTool, Description("Shows recent git commit history for the repository. Returns last N commits with hash, author, date, and message in a compact format.")]
-        public static async Task<string> GitLog(
+        public async Task<string> GitLog(
             [Description("Absolute path to any file or folder inside the git repo.")] string projectPath,
             [Description("Number of recent commits to show. Default 20, max 100.")] int count = 20,
             [Description("Optional: show history for a specific file only.")] string? filePath = null)
@@ -57,7 +62,7 @@ namespace B4XMcpServer.Tools
         }
 
         [McpServerTool, Description("Shows current git status: current branch, staged changes, unstaged changes, and untracked files in a compact format.")]
-        public static async Task<string> GitStatus(
+        public async Task<string> GitStatus(
             [Description("Absolute path to any file or folder inside the git repo.")] string projectPath)
         {
             string dir = GetWorkingDir(projectPath);

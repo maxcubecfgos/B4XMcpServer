@@ -5,6 +5,7 @@ using System.IO;
 using System.Linq;
 using System.Text.Json;
 using B4XMcpServer.Engine;
+using B4XMcpServer.Repositories;
 using B4XMcpServer.Services;
 using B4XMcpServer.Utils;
 using ModelContextProtocol.Server;
@@ -20,11 +21,18 @@ namespace B4XMcpServer.Tools
     [McpServerToolType]
     public sealed class RuntimeTools
     {
+        private readonly IProjectRepository _projectRepository;
+
         // Output truncation budgets. Long runs of JVM init chatter can easily reach several
         // thousand lines; we keep the head (so the AI sees startup messages) and the tail
         // (where the crash usually lives) and throw the rest away.
         private const int OutputHeadChars = 500;
         private const int OutputTailChars = 4000;
+
+        public RuntimeTools(IProjectRepository projectRepository)
+        {
+            _projectRepository = projectRepository;
+        }
 
         [McpServerTool, Description(
             "Runs a compiled B4X project and captures stdout/stderr along with any unhandled " +
@@ -32,7 +40,7 @@ namespace B4XMcpServer.Tools
             "B4X source file, Sub, and line, with a heuristic cause suggestion. " +
             "Currently supports B4J (java -jar the built Objects/<name>.jar); B4A requires " +
             "DeviceTools.install_apk + get_logcat, and B4i is not supported by this tool.")]
-        public static async Task<string> RunProject(
+        public async Task<string> RunProject(
             [Description("Absolute path to the B4X project folder, or its .b4j file (B4J only at this time).")] string projectPath,
             [Description("Hard timeout in seconds for the app run. Default 30. The JVM may take a few seconds to start, so prefer ≥ 10.")] int runTimeoutSec = 30,
             [Description("If true, still attempts to run even if compile_project hasn't been called recently. Default false (caller is expected to compile first).")] bool ignoreBuildStatus = false)
@@ -64,7 +72,7 @@ namespace B4XMcpServer.Tools
             "Alias for run_project, signals that the AI expects to capture a crash (e.g. when " +
             "investigating a user-reported runtime error). Returns early once an exception is " +
             "captured so the AI can move directly to fixing it.")]
-        public static async Task<string> LaunchDebug(
+        public async Task<string> LaunchDebug(
             [Description("Absolute path to the B4X project folder or its .b4j file.")] string projectPath,
             [Description("Hard timeout in seconds for the app run. Default 30.")] int runTimeoutSec = 30)
         {
@@ -78,7 +86,7 @@ namespace B4XMcpServer.Tools
             "maps each frame to the corresponding B4X source file, Sub, and line in the project. " +
             "Use this when you have a stack trace but no live run, or when run_project timing " +
             "out prevents a fresh capture.")]
-        public static string GetRuntimeErrorDetail(
+        public string GetRuntimeErrorDetail(
             [Description("Raw Java stack trace as a string. Can be multi-line. The exception's 'Caused by:' chain is supported — the deepest cause is analyzed.")] string stackTrace,
             [Description("Absolute path to the B4X project folder, or its .b4a/.b4j/.b4i file. Used to resolve Sub names, modules, and B4J debugLine comments.")] string projectPath)
         {
@@ -90,7 +98,7 @@ namespace B4XMcpServer.Tools
             if (parsed == null)
                 return Serialize(new { error = "No Java exception found in the input. Make sure the input contains a line like 'java.lang.X: msg' or 'at fully.qualified.Name(File.java:line)'." });
 
-            string? root = Directory.Exists(projectPath) ? projectPath : ProjectScanner.FindProjectRoot(projectPath);
+            string? root = Directory.Exists(projectPath) ? projectPath : _projectRepository.FindProjectRoot(projectPath);
             var frames = RuntimeErrorMapper.MapStackTrace(parsed.StackFrames, root ?? projectPath);
 
             // Apply the heuristic to the deepest B4X-mapped frame (the one closest to user code).
@@ -145,12 +153,12 @@ namespace B4XMcpServer.Tools
             "Returns the most recent unhandled exception captured by the last run_project call " +
             "for this project, already mapped to B4X source. Use this when the AI just ran " +
             "the app and wants to dig into the failure without re-running it.")]
-        public static string GetB4xStackTrace(
+        public string GetB4xStackTrace(
             [Description("Absolute path to the B4X project folder, or its .b4j file.")] string projectPath)
         {
             PathSecurity.ValidateAbsolutePath(projectPath, nameof(projectPath));
 
-            string? root = Directory.Exists(projectPath) ? projectPath : ProjectScanner.FindProjectRoot(projectPath);
+            string? root = Directory.Exists(projectPath) ? projectPath : _projectRepository.FindProjectRoot(projectPath);
             if (root == null)
                 return Serialize(new { error = $"Could not determine a B4X project root from '{projectPath}'." });
 
@@ -163,13 +171,13 @@ namespace B4XMcpServer.Tools
 
         // ── Formatting helpers ───────────────────────────────────────────
 
-        private static string FormatLaunchResult(RuntimeLaunchResult result, string projectPath, bool fromCache = false)
+        private string FormatLaunchResult(RuntimeLaunchResult result, string projectPath, bool fromCache = false)
         {
             string? suspectedCause = result.Exception == null
                 ? null
                 : RuntimeErrorMapper.GetHeuristicCause(result.Exception.Type, result.Exception.Message);
 
-            string? root = Directory.Exists(projectPath) ? projectPath : ProjectScanner.FindProjectRoot(projectPath);
+            string? root = Directory.Exists(projectPath) ? projectPath : _projectRepository.FindProjectRoot(projectPath);
             var frames = result.Exception == null
                 ? new List<B4xFrame>()
                 : RuntimeErrorMapper.MapStackTrace(result.Exception.StackFrames, root ?? projectPath);

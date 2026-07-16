@@ -1,4 +1,5 @@
 using B4XMcpServer.Engine;
+using B4XMcpServer.Repositories;
 using B4XMcpServer.Services;
 using B4XMcpServer.Utils;
 using ModelContextProtocol.Server;
@@ -16,8 +17,17 @@ namespace B4XMcpServer.Tools
     [McpServerToolType]
     public sealed class LayoutTools
     {
+        private readonly IFileRepository _fileRepository;
+        private readonly IProjectRepository _projectRepository;
+
         // Regex timeout protects against catastrophic backtracking on untrusted input.
         private static readonly TimeSpan RegexTimeout = TimeSpan.FromSeconds(2);
+
+        public LayoutTools(IFileRepository fileRepository, IProjectRepository projectRepository)
+        {
+            _fileRepository = fileRepository;
+            _projectRepository = projectRepository;
+        }
 
         // ── Write Layout ──────────────────────────────────────────────
 
@@ -26,7 +36,7 @@ namespace B4XMcpServer.Tools
         // corrupts the file for IDE opening. Use create_empty_layout (which clones an
         // existing IDE-created layout and clears it) instead.
         [McpServerTool, Description("DISABLED. This tool is no longer available because writing a layout from JSON produces binaries incompatible with the B4X IDE. Use create_empty_layout instead.")]
-        public static string WriteLayout(
+        public string WriteLayout(
             [Description("Absolute path to the .bal or .bil layout file to write")] string layoutPath,
             [Description("Layout JSON. Must contain: version, gridSize, variants, manifest, fileReferences, scriptData, flags, rootControl.")] string jsonContent)
         {
@@ -41,7 +51,7 @@ namespace B4XMcpServer.Tools
         // ── Create Empty Layout ──────────────────────────────────────
 
         [McpServerTool, Description("Creates an empty B4X layout file by cloning an existing IDE-created layout in the same project and removing all of its controls. This avoids the incompatible binary format produced by writing a layout from JSON. Requires at least one existing .bal/.bjl/.bil layout in the project to use as a template.")]
-        public static string CreateEmptyLayout(
+        public string CreateEmptyLayout(
             [Description("Absolute path to the B4X project folder.")] string projectPath,
             [Description("Absolute path to the new empty layout file (.bal, .bil, or .bjl) to create.")] string layoutPath,
             [Description("Optional: preferred existing layout file to use as template. If omitted, the first layout found in the project is used.")] string? templateLayoutPath = null)
@@ -57,7 +67,7 @@ namespace B4XMcpServer.Tools
                 throw new ArgumentException("File must have .bal, .bil or .bjl extension");
 
             // For destructive writes, keep them inside the project root.
-            string? projectRoot = ProjectScanner.FindProjectRoot(PathSecurity.GetDirectoryForProjectRoot(layoutPath));
+            string? projectRoot = _projectRepository.FindProjectRoot(PathSecurity.GetDirectoryForProjectRoot(layoutPath));
             if (projectRoot != null)
                 PathSecurity.ValidateWithinBaseDirectory(layoutPath, projectRoot, nameof(layoutPath));
 
@@ -65,7 +75,7 @@ namespace B4XMcpServer.Tools
             string? sourceLayout = null;
             if (!string.IsNullOrEmpty(templateLayoutPath))
             {
-                if (!File.Exists(templateLayoutPath))
+                if (!_fileRepository.Exists(templateLayoutPath))
                     return JsonSerializer.Serialize(new { success = false, error = $"Template layout not found: {templateLayoutPath}" }, JsonOptions.Default);
                 if (!string.Equals(Path.GetExtension(templateLayoutPath), ext, StringComparison.OrdinalIgnoreCase))
                     return JsonSerializer.Serialize(new { success = false, error = $"Template layout extension must match target extension '{ext}'." }, JsonOptions.Default);
@@ -73,18 +83,12 @@ namespace B4XMcpServer.Tools
             }
             else
             {
-                string[] ignoredFolders = { "Objects", "bin", "gen", "obj", ".git", "temp", "build", ".vs", ".idea", "backup" };
-                var candidates = Directory.EnumerateFiles(projectPath, "*.*", SearchOption.AllDirectories)
-                    .Where(f =>
-                    {
-                        if (f.EndsWith(".bak", StringComparison.OrdinalIgnoreCase))
-                            return false;
-                        var rel = Path.GetRelativePath(projectPath, f);
-                        if (ignoredFolders.Any(x => rel.Split(Path.DirectorySeparatorChar).Contains(x, StringComparer.OrdinalIgnoreCase)))
-                            return false;
-                        var e = Path.GetExtension(f).ToLowerInvariant();
-                        return e == ".bal" || e == ".bjl" || e == ".bil";
-                    });
+                // Use the project repository to discover existing layouts, which already
+                // respects ignored folders and returns clean absolute paths.
+                var candidates = _projectRepository.ScanProject(projectPath)
+                    .Where(f => f.Kind == "bal" || f.Kind == "bjl" || f.Kind == "bil")
+                    .Select(f => f.Path)
+                    .Where(f => !f.EndsWith(".bak", StringComparison.OrdinalIgnoreCase));
 
                 // Prefer a layout with the same extension, then one in the project's Files folder,
                 // then the shortest path (closest to the project root).
@@ -108,10 +112,10 @@ namespace B4XMcpServer.Tools
             if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
                 Directory.CreateDirectory(dir);
 
-            File.Copy(sourceLayout, layoutPath, overwrite: true);
+            _fileRepository.Copy(sourceLayout, layoutPath, overwrite: true);
 
             // Decode the cloned layout and strip all controls, keeping only the root.
-            var data = File.ReadAllBytes(layoutPath);
+            var data = _fileRepository.ReadBytes(layoutPath);
             var decoded = BalDecoder.Decode(data);
             var json = JsonNode.Parse(decoded)?.AsObject();
             if (json == null)
@@ -127,12 +131,11 @@ namespace B4XMcpServer.Tools
             json["manifest"] = CollectManifest(rootControl);
 
             // Backup the just-copied target (we already wrote it once; backup now for safety).
-            string backupPath = layoutPath + ".bak";
-            File.Copy(layoutPath, backupPath, overwrite: true);
+            string backupPath = _fileRepository.BackupPath(layoutPath) ?? (layoutPath + ".bak");
 
             // Re-encode and write.
             byte[] output = BalEncoder.Encode(json.ToJsonString());
-            File.WriteAllBytes(layoutPath, output);
+            _fileRepository.WriteBytes(layoutPath, output);
 
             return JsonSerializer.Serialize(new
             {
@@ -147,15 +150,15 @@ namespace B4XMcpServer.Tools
         // ── List Controls ────────────────────────────────────────────
 
         [McpServerTool, Description("Lists all controls in a layout file with their name, type, position, size, and children hierarchy. Use this to understand the structure before adding, removing, or moving controls.")]
-        public static string ListLayoutControls(
+        public string ListLayoutControls(
             [Description("Absolute path to the .bal or .bil layout file")] string layoutPath)
         {
             PathSecurity.ValidateAbsolutePath(layoutPath, nameof(layoutPath));
 
-            if (!File.Exists(layoutPath))
+            if (!_fileRepository.Exists(layoutPath))
                 throw new FileNotFoundException($"Layout file not found: {layoutPath}");
 
-            var data = File.ReadAllBytes(layoutPath);
+            var data = _fileRepository.ReadBytes(layoutPath);
             var decoded = BalDecoder.Decode(data);
             var json = JsonNode.Parse(decoded)?.AsObject();
             if (json == null)
@@ -213,7 +216,7 @@ namespace B4XMcpServer.Tools
         // ── Add Control ──────────────────────────────────────────────
 
         [McpServerTool, Description("Adds a new control to an existing layout file. Valid control types for B4A: Button, Label, EditText, Panel, CheckBox, RadioButton, Spinner, ListView, ImageView, WebView, ScrollView, TabStrip. For B4J: Button, Label, TextField, TextArea, CheckBox, RadioButton, ComboBox, ListView, ImageView, Slider, DatePicker. Creates .bak backup first.")]
-        public static string LayoutAddControl(
+        public string LayoutAddControl(
             [Description("Absolute path to the .bal or .bil layout file")] string layoutPath,
             [Description("Control type: 'Button', 'Label', 'EditText', 'Panel', 'CheckBox', 'ImageView', etc.")] string controlType,
             [Description("Optional: control name. Auto-generated if omitted (e.g. 'Button1', 'Label2').")] string? controlName = null,
@@ -225,13 +228,13 @@ namespace B4XMcpServer.Tools
         {
             PathSecurity.ValidateAbsolutePath(layoutPath, nameof(layoutPath));
 
-            if (!File.Exists(layoutPath))
+            if (!_fileRepository.Exists(layoutPath))
                 throw new FileNotFoundException($"Layout file not found: {layoutPath}");
 
             var ext = Path.GetExtension(layoutPath).ToLowerInvariant();
             bool isB4J = ext == ".bjl";
 
-            var data = File.ReadAllBytes(layoutPath);
+            var data = _fileRepository.ReadBytes(layoutPath);
             var decoded = BalDecoder.Decode(data);
             var json = JsonNode.Parse(decoded)?.AsObject();
             if (json == null)
@@ -312,11 +315,10 @@ namespace B4XMcpServer.Tools
             json["manifest"] = CollectManifest(rootControl);
 
             // Backup and write
-            string backupPath = layoutPath + ".bak";
-            File.Copy(layoutPath, backupPath, overwrite: true);
+            string backupPath = _fileRepository.BackupPath(layoutPath) ?? (layoutPath + ".bak");
 
             byte[] output = BalEncoder.Encode(json.ToJsonString());
-            File.WriteAllBytes(layoutPath, output);
+            _fileRepository.WriteBytes(layoutPath, output);
 
             return JsonSerializer.Serialize(new
             {
@@ -330,20 +332,20 @@ namespace B4XMcpServer.Tools
         // ── Remove Control ───────────────────────────────────────────
 
         [McpServerTool, Description("Removes one or more controls from a layout by name. Names can be a single string or comma-separated list. Creates .bak backup first.")]
-        public static string LayoutRemoveControl(
+        public string LayoutRemoveControl(
             [Description("Absolute path to the .bal or .bil layout file")] string layoutPath,
             [Description("Control name(s) to remove. Single name or comma-separated list.")] string controlNames)
         {
             PathSecurity.ValidateAbsolutePath(layoutPath, nameof(layoutPath));
 
-            if (!File.Exists(layoutPath))
+            if (!_fileRepository.Exists(layoutPath))
                 throw new FileNotFoundException($"Layout file not found: {layoutPath}");
 
             var names = controlNames.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
             if (names.Length == 0)
                 throw new ArgumentException("No control names provided.");
 
-            var data = File.ReadAllBytes(layoutPath);
+            var data = _fileRepository.ReadBytes(layoutPath);
             var decoded = BalDecoder.Decode(data);
             var json = JsonNode.Parse(decoded)?.AsObject();
             if (json == null)
@@ -369,11 +371,10 @@ namespace B4XMcpServer.Tools
             json["manifest"] = CollectManifest(rootControl);
 
             // Backup and write
-            string backupPath = layoutPath + ".bak";
-            File.Copy(layoutPath, backupPath, overwrite: true);
+            string backupPath = _fileRepository.BackupPath(layoutPath) ?? (layoutPath + ".bak");
 
             byte[] output = BalEncoder.Encode(json.ToJsonString());
-            File.WriteAllBytes(layoutPath, output);
+            _fileRepository.WriteBytes(layoutPath, output);
 
             return JsonSerializer.Serialize(new
             {
@@ -388,7 +389,7 @@ namespace B4XMcpServer.Tools
         // ── Move / Resize Control ────────────────────────────────────
 
         [McpServerTool, Description("Moves and/or resizes a control in a layout. Only specify the properties you want to change — omitted values keep their current setting. Creates .bak backup first.")]
-        public static string LayoutMoveControl(
+        public string LayoutMoveControl(
             [Description("Absolute path to the .bal or .bil layout file")] string layoutPath,
             [Description("Control name to modify")] string controlName,
             [Description("New X position (omit to keep current)")] int? left = null,
@@ -398,13 +399,13 @@ namespace B4XMcpServer.Tools
         {
             PathSecurity.ValidateAbsolutePath(layoutPath, nameof(layoutPath));
 
-            if (!File.Exists(layoutPath))
+            if (!_fileRepository.Exists(layoutPath))
                 throw new FileNotFoundException($"Layout file not found: {layoutPath}");
 
             if (left == null && top == null && width == null && height == null)
                 throw new ArgumentException("At least one of left, top, width, or height must be specified.");
 
-            var data = File.ReadAllBytes(layoutPath);
+            var data = _fileRepository.ReadBytes(layoutPath);
             var decoded = BalDecoder.Decode(data);
             var json = JsonNode.Parse(decoded)?.AsObject();
             if (json == null)
@@ -443,11 +444,10 @@ namespace B4XMcpServer.Tools
                 if (height.HasValue) SetVariantInt(varObj, "height", height.Value);
             }
 
-            string backupPath = layoutPath + ".bak";
-            File.Copy(layoutPath, backupPath, overwrite: true);
+            string backupPath = _fileRepository.BackupPath(layoutPath) ?? (layoutPath + ".bak");
 
             byte[] output = BalEncoder.Encode(json.ToJsonString());
-            File.WriteAllBytes(layoutPath, output);
+            _fileRepository.WriteBytes(layoutPath, output);
 
             // Build the response from the parameter values the caller just asked for, falling
             // back to the PRE-MOVE variants from variant0.value.* for any unspecified axis.
@@ -1037,7 +1037,7 @@ namespace B4XMcpServer.Tools
         }
 
         [McpServerTool, Description("Generates B4X code for a layout control: inserts a Dim declaration in the appropriate Globals section and/or appends an event Sub skeleton at the end of the file. Reads the control type from the layout to produce correct type annotations (e.g. Private btn As B4XView). Creates .bak backup before modifying.")]
-        public static string GenerateCodeFromLayout(
+        public string GenerateCodeFromLayout(
     [Description("Absolute path to the .bal or .bjl layout file")] string layoutPath,
     [Description("Control name from the layout (e.g. 'Button1', 'lblCounter')")] string controlName,
     [Description("Absolute path to the target .bas or .b4a/.b4j file to insert code into")] string sourcePath,
@@ -1046,15 +1046,15 @@ namespace B4XMcpServer.Tools
             PathSecurity.ValidateAbsolutePath(layoutPath, nameof(layoutPath));
             PathSecurity.ValidateAbsolutePath(sourcePath, nameof(sourcePath));
 
-            if (!File.Exists(layoutPath))
+            if (!_fileRepository.Exists(layoutPath))
                 throw new FileNotFoundException($"Layout file not found: {layoutPath}");
-            if (!File.Exists(sourcePath))
+            if (!_fileRepository.Exists(sourcePath))
                 throw new FileNotFoundException($"Source file not found: {sourcePath}");
 
             generate = generate.ToLowerInvariant();
 
             // ── Read and decode layout ────────────────────────────────────
-            var data = File.ReadAllBytes(layoutPath);
+            var data = _fileRepository.ReadBytes(layoutPath);
             var decoded = BalDecoder.Decode(data);
             var json = JsonNode.Parse(decoded)?.AsObject();
             if (json == null)
@@ -1086,7 +1086,7 @@ namespace B4XMcpServer.Tools
             controlType = SimplifyTypeName(controlType);
 
             // ── Read source file ──────────────────────────────────────────
-            string raw = File.ReadAllText(sourcePath);
+            string raw = _fileRepository.ReadTextWithHeader(sourcePath);
 
             const string marker = "@EndOfDesignText@";
             int markerIdx = raw.IndexOf(marker, StringComparison.Ordinal);
@@ -1159,12 +1159,11 @@ namespace B4XMcpServer.Tools
             }
 
             // ── Write back ────────────────────────────────────────────────
-            string backupPath = sourcePath + ".bak";
-            File.Copy(sourcePath, backupPath, overwrite: true);
+            string backupPath = _fileRepository.BackupPath(sourcePath) ?? (sourcePath + ".bak");
 
             var updatedSource = string.Join("\n", lines);
             var finalContent = markerIdx >= 0 ? header + "\n" + updatedSource : updatedSource;
-            File.WriteAllText(sourcePath, finalContent);
+            _fileRepository.WriteText(sourcePath, finalContent);
 
             return JsonSerializer.Serialize(new
             {
@@ -1263,20 +1262,20 @@ namespace B4XMcpServer.Tools
         // ── Register Layout in Project ──────────────────────────────────
 
         [McpServerTool, Description("Registers a layout file in the project metadata so the IDE and builder recognize it. Adds FileN= and FileGroupN= entries to the project header, updates NumberOfFiles, and creates .bak backup. If the layout is already registered, does nothing.")]
-        public static string RegisterLayoutInProject(
+        public string RegisterLayoutInProject(
             [Description("Absolute path to the .b4a or .b4j project file")] string projectPath,
             [Description("Layout file name (e.g. 'Main.bal', 'Settings.bjl'). Can be just the filename or a relative path like 'Files/Main.bal'.")] string layoutFileName)
         {
             PathSecurity.ValidateAbsolutePath(projectPath, nameof(projectPath));
 
-            if (!File.Exists(projectPath))
+            if (!_fileRepository.Exists(projectPath))
                 throw new FileNotFoundException($"Project file not found: {projectPath}");
 
             var ext = Path.GetExtension(projectPath).ToLowerInvariant();
             if (ext != ".b4a" && ext != ".b4j" && ext != ".b4i")
                 throw new ArgumentException("File must have .b4a, .b4j, or .b4i extension");
 
-            string raw = File.ReadAllText(projectPath);
+            string raw = _fileRepository.ReadTextWithHeader(projectPath);
             const string marker = "@EndOfDesignText@";
             int markerIdx = raw.IndexOf(marker, StringComparison.Ordinal);
 
@@ -1379,9 +1378,8 @@ namespace B4XMcpServer.Tools
             string newHeader = string.Join(eol, lines);
             string newContent = newHeader + codeSection;
 
-            string backupPath = projectPath + ".bak";
-            File.Copy(projectPath, backupPath, overwrite: true);
-            File.WriteAllText(projectPath, newContent);
+            string backupPath = _fileRepository.BackupPath(projectPath) ?? (projectPath + ".bak");
+            _fileRepository.WriteText(projectPath, newContent);
 
             return JsonSerializer.Serialize(new
             {
@@ -1394,110 +1392,25 @@ namespace B4XMcpServer.Tools
                 numberOfFiles = nextIndex
             }, JsonOptions.Default);
         }
-        [McpServerTool, Description("Registers a .bas module in the project metadata so the IDE and builder recognize it. Adds ModuleN= entry, updates NumberOfModules, and creates .bak backup. If the module is already registered, does nothing.")]
-        public static string RegisterModuleInProject(
-    [Description("Absolute path to the .b4a or .b4j project file")] string projectPath,
-    [Description("Module file name (e.g. 'Settings.bas', 'Main'). Can include or omit .bas extension.")] string moduleName)
+        [McpServerTool, Description("DEPRECATED — do not use. Registering .bas modules automatically has proven unreliable and can corrupt the project metadata. This tool now returns the exact manual steps the user must follow in the B4X IDE to register a new module safely.")]
+        public string RegisterModuleInProject(
+    [Description("Ignored — kept only for signature compatibility.")] string projectPath,
+    [Description("Ignored — kept only for signature compatibility.")] string moduleName)
         {
-            PathSecurity.ValidateAbsolutePath(projectPath, nameof(projectPath));
-
-            if (!File.Exists(projectPath))
-                throw new FileNotFoundException($"Project file not found: {projectPath}");
-
-            var ext = Path.GetExtension(projectPath).ToLowerInvariant();
-            if (ext != ".b4a" && ext != ".b4j" && ext != ".b4i")
-                throw new ArgumentException("File must have .b4a, .b4j, or .b4i extension");
-
-            string raw = File.ReadAllText(projectPath);
-            const string marker = "@EndOfDesignText@";
-            int markerIdx = raw.IndexOf(marker, StringComparison.Ordinal);
-
-            if (markerIdx < 0)
-                throw new InvalidOperationException("Project file is corrupted.");
-
-            string headerSection = raw.Substring(0, markerIdx);
-            string codeSection = raw.Substring(markerIdx);
-
-            bool usesCrLf = headerSection.Contains("\r\n");
-            string eol = usesCrLf ? "\r\n" : "\n";
-            var lines = headerSection.Split(new[] { "\r\n", "\n" }, StringSplitOptions.None).ToList();
-
-            // Normalize: strip .bas extension for comparison
-            string normalizedName = moduleName.Replace('\\', '/').Trim();
-            if (normalizedName.EndsWith(".bas", StringComparison.OrdinalIgnoreCase))
-                normalizedName = normalizedName.Substring(0, normalizedName.Length - 4);
-
-            var moduleRegex = new Regex(@"^Module(\d+)=(.*)$", RegexOptions.IgnoreCase, RegexTimeout);
-            var numberOfModulesRegex = new Regex(@"^NumberOfModules=(\d+)$", RegexOptions.IgnoreCase, RegexTimeout);
-
-            int maxModuleIndex = 0;
-            bool alreadyRegistered = false;
-
-            for (int i = 0; i < lines.Count; i++)
-            {
-                var line = lines[i];
-                var moduleMatch = moduleRegex.Match(line);
-                if (moduleMatch.Success)
-                {
-                    int idx = int.Parse(moduleMatch.Groups[1].Value);
-                    if (idx > maxModuleIndex) maxModuleIndex = idx;
-
-                    string existingName = moduleMatch.Groups[2].Value.Trim();
-                    string existingNormalized = existingName.EndsWith(".bas", StringComparison.OrdinalIgnoreCase)
-                        ? existingName.Substring(0, existingName.Length - 4)
-                        : existingName;
-
-                    if (string.Equals(existingNormalized, normalizedName, StringComparison.OrdinalIgnoreCase))
-                        alreadyRegistered = true;
-                }
-            }
-
-            if (alreadyRegistered)
-            {
-                return JsonSerializer.Serialize(new
-                {
-                    success = true,
-                    projectPath,
-                    action = "already_registered",
-                    module = normalizedName
-                }, JsonOptions.Default);
-            }
-
-            // Add new ModuleN entry
-            int nextIndex = maxModuleIndex + 1;
-            lines.Add($"Module{nextIndex}={normalizedName}");
-
-            // Update NumberOfModules
-            bool updatedNumberOfModules = false;
-            for (int i = 0; i < lines.Count; i++)
-            {
-                var nmMatch = numberOfModulesRegex.Match(lines[i]);
-                if (nmMatch.Success)
-                {
-                    lines[i] = $"NumberOfModules={nextIndex}";
-                    updatedNumberOfModules = true;
-                    break;
-                }
-            }
-            if (!updatedNumberOfModules)
-                lines.Insert(0, $"NumberOfModules={nextIndex}");
-
-            string newHeader = string.Join(eol, lines);
-            string newContent = newHeader + codeSection;
-
-            string backupPath = projectPath + ".bak";
-            File.Copy(projectPath, backupPath, overwrite: true);
-            File.WriteAllText(projectPath, newContent);
-
             return JsonSerializer.Serialize(new
             {
-                success = true,
-                projectPath,
-                backup = backupPath,
-                action = "registered",
-                module = normalizedName,
-                entry = $"Module{nextIndex}",
-                numberOfModules = nextIndex
+                success = false,
+                error = "Automatic registration of .bas modules is disabled to prevent project corruption.",
+                instructions = new[]
+                {
+                    "1. Open the project in the B4X IDE.",
+                    "2. If the module file is not already in the project folder, copy it there first.",
+                    "3. In the IDE, right-click the project name in the Files tree and choose 'Add Existing Module', or use Project → Add New Module if you still need to create it.",
+                    "4. The IDE will update the project metadata (ModuleN= and NumberOfModules) automatically.",
+                    "5. Save the project in the IDE (Ctrl+S).",
+                    "6. After the module is registered, you can use get_file_content / edit_sub / analyze_module on it, and compile_project to verify."
+                },
+                note = "Do NOT edit the project file's ModuleN= or NumberOfModules= entries manually — the IDE must keep these in sync with the actual files."
             }, JsonOptions.Default);
         }
     }

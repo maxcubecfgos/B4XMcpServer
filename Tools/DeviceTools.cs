@@ -1,18 +1,23 @@
-﻿using ModelContextProtocol.Server;
+﻿using B4XMcpServer.Repositories;
+using B4XMcpServer.Services;
+using ModelContextProtocol.Server;
 using System;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.Threading.Tasks;
 using System.Text.Json;
-using B4XMcpServer.Services;
 
 namespace B4XMcpServer.Tools
 {
     [McpServerToolType]
     public sealed class DeviceTools
     {
+        public DeviceTools(IFileRepository fileRepository, IProjectRepository projectRepository)
+        {
+        }
+
         [McpServerTool, Description("Lists Android devices/emulators currently connected and visible to ADB.")]
-        public static async Task<string> ListDevices()
+        public async Task<string> ListDevices()
         {
             var adb = AdbLocator.LocateAdb();
             if (adb == null)
@@ -23,7 +28,7 @@ namespace B4XMcpServer.Tools
         }
 
         [McpServerTool, Description("Returns recent Android logcat output filtered to the 'B4A' tag (where B4A's Log() calls and unhandled exceptions show up). Use this to catch runtime crashes/errors that a compile-time check can't see — the natural complement to compile_project.")]
-        public static async Task<string> GetLogcat(
+        public async Task<string> GetLogcat(
             [Description("Number of lines to return. Default 200.")] int lines = 200,
             [Description("ADB device serial, optional — uses the first connected device if omitted.")] string? deviceSerial = null)
         {

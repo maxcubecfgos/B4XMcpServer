@@ -1,5 +1,6 @@
 ﻿using B4XMcpServer.Engine;
 using B4XMcpServer.Models;
+using B4XMcpServer.Repositories;
 using B4XMcpServer.Services;
 using B4XMcpServer.Utils;
 using ModelContextProtocol.Server;
@@ -18,8 +19,17 @@ namespace B4XMcpServer.Tools
     [McpServerToolType]
     public sealed class ProjectTools
     {
+        private readonly IFileRepository _fileRepository;
+        private readonly IProjectRepository _projectRepository;
+
         // Regex timeout protects against catastrophic backtracking on untrusted input.
         private static readonly TimeSpan RegexTimeout = TimeSpan.FromSeconds(2);
+
+        public ProjectTools(IFileRepository fileRepository, IProjectRepository projectRepository)
+        {
+            _fileRepository = fileRepository;
+            _projectRepository = projectRepository;
+        }
 
         // Clase auxiliar para cache de ValidateProject
         private class CachedParseResult
@@ -28,18 +38,18 @@ namespace B4XMcpServer.Tools
         }
 
         [McpServerTool, Description("Returns the structure of a B4X project (B4A or B4J): the project root, the .b4a/.b4j/.b4i project file, and every module (.bas) and layout (.bal/.bjl/.bil) file found, ignoring build folders (Objects/bin/gen/obj). Accepts either the project folder path or the path to the .b4a/.b4j/.b4i file itself.")]
-        public static string GetProjectStructure(
+        public string GetProjectStructure(
             [Description("Absolute path to the B4X project folder, or to its .b4a/.b4j/.b4i project file.")] string projectPath)
         {
             string? root = Directory.Exists(projectPath)
                 ? projectPath
-                : ProjectScanner.FindProjectRoot(projectPath);
+                : _projectRepository.FindProjectRoot(projectPath);
 
             if (root == null)
                 throw new DirectoryNotFoundException($"Could not determine a B4X project root from '{projectPath}'. Pass either the project folder or its .b4a/.b4j/.b4i file.");
 
-            var files = ProjectScanner.ScanProject(root);
-            var projectFile = ProjectScanner.FindProjectFile(root);
+            var files = _projectRepository.ScanProject(root);
+            var projectFile = _projectRepository.FindProjectFile(root);
 
             // ── WARNINGS ────────────────────────────────────────────────
             var warnings = new List<string>();
@@ -125,12 +135,12 @@ namespace B4XMcpServer.Tools
         }
 
         [McpServerTool, Description("Returns the full text content of a file (B4X module .bas, project file .b4a/.b4j/.b4i, or any other text file). For .bas and project files (.b4a/.b4j/.b4i), strips the IDE metadata header automatically ONLY when the @EndOfDesignText@ marker is present; if the marker is missing, returns the full content including any header.")]
-        public static string GetFileContent(
+        public string GetFileContent(
             [Description("Absolute path to the file to read.")] string filePath)
         {
             PathSecurity.ValidateAbsolutePath(filePath, nameof(filePath));
 
-            if (!File.Exists(filePath))
+            if (!_fileRepository.Exists(filePath))
                 throw new FileNotFoundException($"File not found: {filePath}");
 
             var ext = Path.GetExtension(filePath).ToLowerInvariant();
@@ -138,20 +148,20 @@ namespace B4XMcpServer.Tools
             bool isBasFile = ext == ".bas";
 
             if (isProjectFile || isBasFile)
-                return CodeUtils.ReadTextSafely(filePath);
+                return _fileRepository.ReadText(filePath);
 
-            return File.ReadAllText(filePath);
+            return _fileRepository.ReadText(filePath);
         }
 
         [McpServerTool, Description("Writes (overwrites) a file with the given content. This replaces the entire file, so read it first with get_file_content if you need to preserve parts of it. Typically used to save an edited B4X module back to disk. BLOCKED for existing .b4a/.b4j/.b4i project files to prevent IDE metadata corruption — use edit_sub for code, enable_library/disable_library for libraries, write_manifest for manifest, and register_layout_in_project/register_module_in_project for layouts/modules. Creates a .bak backup first if the file already exists.")]
-        public static string WriteFile(
+        public string WriteFile(
             [Description("Absolute path to the file to write.")] string filePath,
             [Description("The full new content of the file.")] string content)
         {
             PathSecurity.ValidateAbsolutePath(filePath, nameof(filePath));
 
             // For destructive writes, try to keep them inside the project root.
-            string? projectRoot = ProjectScanner.FindProjectRoot(PathSecurity.GetDirectoryForProjectRoot(filePath));
+            string? projectRoot = _projectRepository.FindProjectRoot(PathSecurity.GetDirectoryForProjectRoot(filePath));
             if (projectRoot != null)
                 PathSecurity.ValidateWithinBaseDirectory(filePath, projectRoot, nameof(filePath));
 
@@ -181,7 +191,7 @@ namespace B4XMcpServer.Tools
 
             // Direct writes to existing B4X project files corrupt the IDE metadata header.
             // Only specialized tools are allowed to touch these files.
-            if (File.Exists(filePath) && PathSecurity.IsMainProjectFile(filePath))
+            if (_fileRepository.Exists(filePath) && PathSecurity.IsMainProjectFile(filePath))
             {
                 return JsonSerializer.Serialize(new
                 {
@@ -198,14 +208,12 @@ namespace B4XMcpServer.Tools
             }
 
             string? backupPath = null;
-            if (File.Exists(filePath))
+            if (_fileRepository.Exists(filePath))
             {
-                backupPath = filePath + ".bak";
-                File.Copy(filePath, backupPath, overwrite: true);
+                backupPath = _fileRepository.BackupPath(filePath);
             }
 
-            File.WriteAllText(filePath, content);
-            CacheManager.Invalidate(filePath);
+            _fileRepository.WriteText(filePath, content);
             return JsonSerializer.Serialize(new
             {
                 success = true,
@@ -217,13 +225,13 @@ namespace B4XMcpServer.Tools
 
         [McpServerTool, Description("Compiles a B4X project (B4A, B4J, or B4i) using the platform-correct builder selected automatically from the project file extension.\n\n" +
             "*** CRITICAL: This is the ONLY way to compile. NEVER run shell commands (dir, cd, type, cat, B4ABuilder.exe, etc.). If compilation fails, this tool returns the exact errors with file names, line numbers, and source lines. READ THEM and fix the code — do not try to debug by running commands manually. ***")]
-        public static async Task<string> CompileProject(
+        public async Task<string> CompileProject(
             [Description("Absolute path to the B4X project folder, or to its .b4a/.b4j project file.")] string projectPath,
             [Description("Timeout in seconds. Default 300.")] int timeoutSeconds = 300)
         {
             PathSecurity.ValidateAbsolutePath(projectPath, nameof(projectPath));
 
-            string? projectFile = File.Exists(projectPath) ? projectPath : ProjectScanner.FindProjectFile(projectPath);
+            string? projectFile = _fileRepository.Exists(projectPath) ? projectPath : _projectRepository.FindProjectFile(projectPath);
             if (projectFile == null)
                 return ToolResponse.Error(
                     $"No .b4a/.b4j/.b4i project file found for '{projectPath}'.",
@@ -292,10 +300,9 @@ namespace B4XMcpServer.Tools
                 var formattedErrors = BuildFormatter.Format(buildResult);
                 return ToolResponse.Error(
                     "COMPILATION FAILED.",
+                    data: new { buildErrors = formattedErrors },
                     hints: new[] { "DO NOT run shell commands. Read the structured errors in `data.buildErrors`, fix the code with write_file or edit_sub, then call compile_project again." },
-                    nextSteps: new[] { "Read the embedded build errors, fix the listed file:line:message, then call compile_project again." },
-                    data: new { buildErrors = formattedErrors })
-                    .Replace("\"data\": null", $"\"data\": {{ \"buildErrors\": {System.Text.Json.JsonSerializer.Serialize(formattedErrors, JsonOptions.Default)} }}");
+                    nextSteps: new[] { "Read the embedded build errors, fix the listed file:line:message, then call compile_project again." });
             }
 
             int errorCount = 0;
@@ -311,20 +318,19 @@ namespace B4XMcpServer.Tools
         /// Validates project file structure before attempting to compile.
         /// Catches broken headers that would make the project unopenable in the IDE.
         /// </summary>
-        private static List<string> ValidateProjectBeforeCompile(string projectFile)
+        private List<string> ValidateProjectBeforeCompile(string projectFile)
         {
             var errors = new List<string>();
 
-            if (!File.Exists(projectFile))
+            if (!_fileRepository.Exists(projectFile))
             {
                 errors.Add($"Project file not found: {projectFile}");
                 return errors;
             }
 
-            // Use the same encoding-detection cascade as everywhere else in the codebase —
-            // File.ReadAllText assumes UTF-8/ASCII and would misread a windows-1252 project
-            // file, same underlying issue that was fixed in CodeUtils.
-            string raw = CodeUtils.DecodeFileWithFallback(projectFile);
+            // Use the repository's header-preserving reader so the IDE metadata header
+            // stays intact and the windows-1252 fallback is applied automatically.
+            string raw = _fileRepository.ReadTextWithHeader(projectFile);
             const string marker = "@EndOfDesignText@";
             int markerIdx = raw.IndexOf(marker, StringComparison.Ordinal);
 
@@ -406,7 +412,7 @@ namespace B4XMcpServer.Tools
                 if (!Path.HasExtension(modulePath))
                     modulePath += ".bas";
 
-                if (!File.Exists(modulePath))
+                if (!_fileRepository.Exists(modulePath))
                     errors.Add($"❌ Module '{moduleName}' is referenced in {kv.Key} but file not found at: {modulePath}");
             }
 
@@ -442,12 +448,12 @@ namespace B4XMcpServer.Tools
         }
 
         [McpServerTool, Description("Decodes a B4X visual layout file into readable JSON: control hierarchy, types, positions (resolved from the correct screen variant, not the misleading top-level template defaults), and properties like text/hint/tag/drawable. Works for both .bal (B4A) and .bjl (B4J) — they share the exact same binary format.")]
-        public static string GetLayoutStructure(
+        public string GetLayoutStructure(
             [Description("Absolute path to the .bal or .bjl layout file.")] string layoutPath)
         {
             PathSecurity.ValidateAbsolutePath(layoutPath, nameof(layoutPath));
 
-            if (!File.Exists(layoutPath))
+            if (!_fileRepository.Exists(layoutPath))
                 throw new FileNotFoundException($"Layout file not found: {layoutPath}");
 
             // Cache the decoded JSON by mtime — .bal decoding is the most expensive
@@ -456,7 +462,7 @@ namespace B4XMcpServer.Tools
             if (CacheManager.TryGetByMtime<string>(layoutPath, out var cached) && cached != null)
                 return cached;
 
-            var data = File.ReadAllBytes(layoutPath);
+            var data = _fileRepository.ReadBytes(layoutPath);
             var decoded = BalDecoder.Decode(data);
             CacheManager.SetByMtime(layoutPath, decoded);
             return decoded;
@@ -481,7 +487,7 @@ namespace B4XMcpServer.Tools
         }
 
         [McpServerTool, Description("Builds a single consolidated Markdown context bundle for a B4X project: an ASCII file tree plus every module/layout, in skeleton form (signatures only, bodies collapsed) by default to keep it compact. Pass FocusFile to keep one specific file fully expanded, or FocusFile+FocusSub to keep just that one Sub expanded while the rest of that same file stays collapsed. Optionally compiles first and attaches real errors. This is the token-efficient alternative to dumping the whole project — use get_file_content afterward for any other single file you need in full.")]
-        public static async Task<string> GetFullContext(GetFullContextRequest request)
+        public async Task<string> GetFullContext(GetFullContextRequest request)
         {
             var projectPath = request.ProjectPath;
             var focusFile = request.FocusFile;
@@ -493,11 +499,11 @@ namespace B4XMcpServer.Tools
             if (focusFile != null)
                 PathSecurity.ValidateAbsolutePath(focusFile, nameof(focusFile));
 
-            string? root = Directory.Exists(projectPath) ? projectPath : ProjectScanner.FindProjectRoot(projectPath);
+            string? root = Directory.Exists(projectPath) ? projectPath : _projectRepository.FindProjectRoot(projectPath);
             if (root == null)
                 throw new DirectoryNotFoundException($"Could not determine a B4X project root from '{projectPath}'.");
 
-            var scanned = ProjectScanner.ScanProject(root);
+            var scanned = _projectRepository.ScanProject(root);
 
             // Smart default: when the caller doesn't specify FocusFile, pick the most
             // recently modified source file. This is usually what the AI is "looking
@@ -511,7 +517,7 @@ namespace B4XMcpServer.Tools
                 // full could otherwise balloon the response and surprise the caller.
                 autoFocusedFromMtime = scanned
                     .Where(f => f.Kind == "bas" || f.Kind == "b4a" || f.Kind == "b4j" || f.Kind == "b4i")
-                    .OrderByDescending(f => File.GetLastWriteTimeUtc(f.Path))
+                    .OrderByDescending(f => _fileRepository.GetLastWriteTimeUtc(f.Path))
                     .Select(f => f.Path)
                     .FirstOrDefault();
                 effectiveFocusFile = autoFocusedFromMtime;
@@ -529,7 +535,7 @@ namespace B4XMcpServer.Tools
             string? compileErrorsBlock = null;
             if (runCompile)
             {
-                var projectFile = ProjectScanner.FindProjectFile(root);
+                var projectFile = _projectRepository.FindProjectFile(root);
                 if (projectFile != null)
                 {
                     var builderPath = BuilderLocator.LocateBuilder(projectFile);
@@ -585,7 +591,7 @@ namespace B4XMcpServer.Tools
         // "Missing a value for required parameter 'request'" because EditSub alone
         // used the wrapped shape. All sister tools already use flat params.)
         [McpServerTool, Description("Replaces the entire body of a single Sub in a B4X module in-place, without touching the rest of the file. Safe for .b4a/.b4j/.b4i project files because it preserves the IDE metadata header and only edits the source code section. CRITICAL: newCode MUST include both the 'Sub ...' header line AND the matching 'End Sub' line — if you forget 'End Sub', the Sub will be corrupted. Use this for modifying existing Subs only; to add a NEW Sub use insert_line instead. If the Sub isn't found, returns the list of Subs that do exist in the file so the caller can retry with the correct name. Creates a .bak backup first.")]
-        public static string EditSub(
+        public string EditSub(
             [Description("Absolute path to the .bas/.b4a/.b4j module file.")] string filePath,
             [Description("Exact name of the Sub to replace (case-insensitive).")] string subName,
             [Description("The full new source of the Sub, CRITICAL: must include BOTH the 'Sub ...' header line AND the matching 'End Sub' line. Forgetting 'End Sub' corrupts the module.")] string newCode)
@@ -603,7 +609,7 @@ namespace B4XMcpServer.Tools
             if (PathSecurity.IsForbiddenMainBas(filePath, out var blockReason))
             {
                 return ToolResponse.Error(
-                    blockReason,
+                    blockReason!,
                     hints: new[]
                     {
                         "The .b4a/.b4j/.b4i file IS the project's Main module REGARDLESS of what it is named — adding code there with edit_sub is the supported path, not building Main.bas from scratch here.",
@@ -612,19 +618,17 @@ namespace B4XMcpServer.Tools
             }
 
             // For destructive writes, keep them inside the project root.
-            string? projectRoot = ProjectScanner.FindProjectRoot(filePath);
+            string? projectRoot = _projectRepository.FindProjectRoot(filePath);
             if (projectRoot != null)
                 PathSecurity.ValidateWithinBaseDirectory(filePath, projectRoot, nameof(filePath));
 
-            if (!File.Exists(filePath))
+            if (!_fileRepository.Exists(filePath))
                 throw new FileNotFoundException($"File not found: {filePath}");
 
-            // Use the encoding-detecting reader (header-preserving variant), not
-            // File.ReadAllText, so modules saved in windows-1252 (common on Spanish/Windows
-            // locales) aren't silently corrupted — same underlying fix as
-            // CodeUtils.ReadTextSafely's encoding-detection bug, but keeping the IDE header
-            // intact since we need to reassemble it below.
-            string raw = CodeUtils.DecodeFileWithFallback(filePath);
+            // Use the repository's header-preserving reader so the IDE metadata header
+            // stays intact for reassembly below. The repository also handles the
+            // windows-1252 fallback that File.ReadAllText would miss.
+            string raw = _fileRepository.ReadTextWithHeader(filePath);
 
             const string marker = "@EndOfDesignText@";
             int markerIdx = raw.IndexOf(marker, StringComparison.Ordinal);
@@ -695,11 +699,8 @@ namespace B4XMcpServer.Tools
             var updatedCodeSection = string.Join("\n", lines);
             var finalContent = markerIdx >= 0 ? header + "\r\n" + updatedCodeSection : updatedCodeSection;
 
-            string backupPath = filePath + ".bak";
-            File.Copy(filePath, backupPath, overwrite: true);
-
-            File.WriteAllText(filePath, finalContent);
-            CacheManager.Invalidate(filePath);
+            string? backupPath = _fileRepository.BackupPath(filePath);
+            _fileRepository.WriteText(filePath, finalContent);
 
             return JsonSerializer.Serialize(new
             {
@@ -719,7 +720,7 @@ namespace B4XMcpServer.Tools
     // a ModelContextProtocol SDK quirk where single-request-object methods require
     // the caller to wrap their JSON args as `{"request": {...}}`, which is non-obvious
     // and easy to get wrong from the AI client side.
-    [McpServerTool, Description("Replaces a single line in a B4X source file (.bas, .b4a, .b4j, .b4i, or any text file) by its 1-based line number, without touching the rest of the file. Pass an empty string as newContent to DELETE the line (subsequent lines shift up). Use this for surgical fixes where you know exactly which line to change (e.g. fixing a typo on line 42). For .b4a/.b4j/.b4i project files the IDE metadata header is preserved automatically. Pass expectedText as an atomic safety check to abort if the line has shifted. Creates a .bak backup before writing. For replacing an entire Sub use edit_sub instead; for replacing the whole file use write_file.")]        public static string EditLine(
+    [McpServerTool, Description("Replaces a single line in a B4X source file (.bas, .b4a, .b4j, .b4i, or any text file) by its 1-based line number, without touching the rest of the file. Pass an empty string as newContent to DELETE the line (subsequent lines shift up). Use this for surgical fixes where you know exactly which line to change (e.g. fixing a typo on line 42). For .b4a/.b4j/.b4i project files the IDE metadata header is preserved automatically. Pass expectedText as an atomic safety check to abort if the line has shifted. Creates a .bak backup before writing. For replacing an entire Sub use edit_sub instead; for replacing the whole file use write_file.")]        public string EditLine(
             [Description("Absolute path to the .bas/.b4a/.b4j/.b4i file (or any text file) to edit.")] string filePath,
             [Description("1-based line number to replace. For .b4a/.b4j/.b4i project files this counts from the FIRST LINE OF THE SOURCE CODE SECTION (after the @EndOfDesignText@ header), which matches the line numbers returned by get_file_content and analyze_module. For .bas files and other text files this counts from line 1 of the file.")] int lineNumber,
             [Description("The new content for the line. Pass an empty string to DELETE the line (all subsequent lines shift up). To replace one line with multiple lines, embed newline characters (\\n) in the string — each newline becomes its own line.")] string newContent,
@@ -734,7 +735,7 @@ namespace B4XMcpServer.Tools
             if (PathSecurity.IsForbiddenMainBas(filePath, out var blockReason))
             {
                 return ToolResponse.Error(
-                    blockReason,
+                    blockReason!,
                     hints: new[]
                     {
                         "edit_line cannot create a new Main.bas in a B4X project directory — the .b4a/.b4j/.b4i is the Main module.",
@@ -742,25 +743,25 @@ namespace B4XMcpServer.Tools
                     });
             }
 
-            // File existence check BEFORE ProjectScanner.FindProjectRoot — the scanner
+            // File existence check BEFORE _projectRepository.FindProjectRoot — the scanner
         // walks up looking for project markers and may throw on non-existent paths,
         // which would surface to the AI as a generic MCP error instead of our clean
-        // ToolResponse.Error envelope. Doing File.Exists first keeps the error path
+        // ToolResponse.Error envelope. Doing Exists first keeps the error path
         // a structured envelope regardless of where the file would have lived.
-        if (!File.Exists(filePath))
+        if (!_fileRepository.Exists(filePath))
             return ToolResponse.Error(
                 $"File not found: {filePath}",
                 hints: new[] { "Run get_project_structure to list every file in the project.", "Use absolute paths only — relative paths are rejected." });
 
         // For destructive writes, keep them inside the project root.
-        string? projectRoot = ProjectScanner.FindProjectRoot(filePath);
+        string? projectRoot = _projectRepository.FindProjectRoot(filePath);
         if (projectRoot != null)
             PathSecurity.ValidateWithinBaseDirectory(filePath, projectRoot, nameof(filePath));
 
-        // Use the encoding-detecting reader (header-preserving variant), not
-        // File.ReadAllText, so files saved in windows-1252 (common on Spanish/Windows
-        // locales) aren't silently corrupted — same rationale as EditSub.
-        string raw = CodeUtils.DecodeFileWithFallback(filePath);
+        // Use the repository's header-preserving reader so the IDE metadata header
+        // stays intact for reassembly below. The repository also handles the
+        // windows-1252 fallback that File.ReadAllText would miss.
+        string raw = _fileRepository.ReadTextWithHeader(filePath);
 
         const string marker = "@EndOfDesignText@";
         int markerIdx = raw.IndexOf(marker, StringComparison.Ordinal);
@@ -840,11 +841,8 @@ namespace B4XMcpServer.Tools
         // Create .bak AFTER all validation passes. This guarantees the backup is only
         // created for edits that actually succeed — unlike EditSub which creates the
         // backup before line-range checks (harmless in practice, but cleaner this way).
-        string backupPath = filePath + ".bak";
-        File.Copy(filePath, backupPath, overwrite: true);
-
-        File.WriteAllText(filePath, finalContent);
-        CacheManager.Invalidate(filePath);
+        string? backupPath = _fileRepository.BackupPath(filePath);
+        _fileRepository.WriteText(filePath, finalContent);
 
         return ToolResponse.Success(
             data: new
@@ -869,7 +867,7 @@ namespace B4XMcpServer.Tools
     // newContent) rather than a single request object — same convention as EditLine,
     // WriteFile, GetManifest, etc. See the EditLine note above for the SDK binding rationale.
     [McpServerTool, Description("Inserts new content as one or more lines at a given 1-based position in a B4X source file (.bas, .b4a, .b4j, .b4i, or any text file), shifting all subsequent lines down. Use this for adding new Subs, Dim declarations, or comments above existing lines without disturbing surrounding code. lineNumber=1 inserts at the top of the file (or top of the code section for .b4a/.b4j/.b4i); lineNumber=totalLines+1 appends after the last existing line. For .b4a/.b4j/.b4i project files the IDE metadata header is preserved automatically. newContent may contain embedded newlines (\\n) — each becomes its own inserted line. Creates a .bak backup before writing. For replacing an existing line use edit_line; for replacing an entire Sub use edit_sub; for rewriting the whole file use write_file.")]
-    public static string InsertLine(
+    public string InsertLine(
         [Description("Absolute path to the .bas/.b4a/.b4j/.b4i file (or any text file) to edit.")] string filePath,
         [Description("1-based position to insert AT. Must be in [1, totalLines+1]. 1 inserts at the very top, totalLines+1 appends after the last existing line. For .b4a/.b4j/.b4i project files this counts from the FIRST LINE OF THE SOURCE CODE SECTION (after the @EndOfDesignText@ header).")] int lineNumber,
         [Description("Content to insert. May contain embedded newline characters (\\n) — each becomes its own inserted line. An empty string inserts one blank line.")] string newContent)
@@ -880,30 +878,29 @@ namespace B4XMcpServer.Tools
         // See EditSub for the full rationale. Block CREATION (File.Exists == false) only;
         // legitimate edits to a pre-existing Main.bas the human authored are still allowed.
         if (PathSecurity.IsForbiddenMainBas(filePath, out var blockReason))
-        {
-            return ToolResponse.Error(
-                blockReason,
-                hints: new[]
-                {
-                    "insert_line cannot create a new Main.bas in a B4X project directory — the .b4a/.b4j/.b4i is the Main module.",
-                    "To add a Sub to the project's Main, use edit_sub on the project file."
-                });
+        {                return ToolResponse.Error(
+                    blockReason!,
+                    hints: new[]
+                    {
+                        "insert_line cannot create a new Main.bas in a B4X project directory — the .b4a/.b4j/.b4i is the Main module.",
+                        "To add a Sub to the project's Main, use edit_sub on the project file."
+                    });
         }
 
         // Same File.Exists-first pattern as EditLine — keeps non-existent-file errors
         // as a clean envelope instead of letting ProjectScanner throw into the MCP transport.
-        if (!File.Exists(filePath))
+        if (!_fileRepository.Exists(filePath))
             return ToolResponse.Error(
                 $"File not found: {filePath}",
                 hints: new[] { "Run get_project_structure to list every file in the project.", "Use absolute paths only — relative paths are rejected." });
 
         // For destructive writes, keep them inside the project root.
-        string? projectRoot = ProjectScanner.FindProjectRoot(filePath);
+        string? projectRoot = _projectRepository.FindProjectRoot(filePath);
         if (projectRoot != null)
             PathSecurity.ValidateWithinBaseDirectory(filePath, projectRoot, nameof(filePath));
 
         // Encoding-detecting read; header-preserving so we can reassemble it below.
-        string raw = CodeUtils.DecodeFileWithFallback(filePath);
+        string raw = _fileRepository.ReadTextWithHeader(filePath);
 
         // Preserve the file's dominant line ending style (CRLF vs LF) so the IDE and
         // version control don't see every line changed after a simple insert.
@@ -953,11 +950,8 @@ namespace B4XMcpServer.Tools
             : updatedEditable;
 
         // Backup AFTER validation — same atomicity guarantee as EditLine.
-        string backupPath = filePath + ".bak";
-        File.Copy(filePath, backupPath, overwrite: true);
-
-        File.WriteAllText(filePath, finalContent);
-        CacheManager.Invalidate(filePath);
+        string? backupPath = _fileRepository.BackupPath(filePath);
+        _fileRepository.WriteText(filePath, finalContent);
 
         return ToolResponse.Success(
             data: new
@@ -979,7 +973,7 @@ namespace B4XMcpServer.Tools
     // Note on parameter shape: ReplaceLines uses individual parameters (filePath, startLine,
     // endLine, newContent) — same convention as the rest of the line-level trio.
     [McpServerTool, Description("Replaces a CONTIGUOUS RANGE of lines [startLine, endLine] in a B4X source file (.bas, .b4a, .b4j, .b4i, or any text file) with new content, in the spirit of edit_line but spanning multiple lines. The range is inclusive on both ends. For .b4a/.b4j/.b4i project files the IDE metadata header is preserved automatically. newContent may contain embedded newlines (\\n) — each becomes its own inserted line. Pass newContent=\"\" to DELETE the range entirely (lines after endLine shift up). When newContent has more lines than the original range, lines after shift DOWN; when fewer, they shift UP; when equal, no shift. For single-line precision or deleting one line use edit_line; for inserting new lines use insert_line.")]
-    public static string ReplaceLines(
+    public string ReplaceLines(
         [Description("Absolute path to the .bas/.b4a/.b4j/.b4i file (or any text file) to edit.")] string filePath,
         [Description("1-based START of the inclusive range to replace. Must be in [1, totalLines].")] int startLine,
         [Description("1-based END of the inclusive range to replace. Must be >= startLine and <= totalLines.")] int endLine,
@@ -988,18 +982,18 @@ namespace B4XMcpServer.Tools
         PathSecurity.ValidateAbsolutePath(filePath, nameof(filePath));
 
         // Same File.Exists-first pattern as EditLine / InsertLine / DeleteLine.
-        if (!File.Exists(filePath))
+        if (!_fileRepository.Exists(filePath))
             return ToolResponse.Error(
                 $"File not found: {filePath}",
                 hints: new[] { "Run get_project_structure to list every file in the project.", "Use absolute paths only — relative paths are rejected." });
 
         // For destructive writes, keep them inside the project root.
-        string? projectRoot = ProjectScanner.FindProjectRoot(filePath);
+        string? projectRoot = _projectRepository.FindProjectRoot(filePath);
         if (projectRoot != null)
             PathSecurity.ValidateWithinBaseDirectory(filePath, projectRoot, nameof(filePath));
 
         // Encoding-detecting read; header-preserving so we can reassemble it below.
-        string raw = CodeUtils.DecodeFileWithFallback(filePath);
+        string raw = _fileRepository.ReadTextWithHeader(filePath);
 
         // Preserve the file's dominant line ending style (CRLF vs LF) so the IDE and
         // version control don't see every line changed after a simple replace.
@@ -1063,11 +1057,8 @@ namespace B4XMcpServer.Tools
             : updatedEditable;
 
         // Backup AFTER validation — same atomicity guarantee as the trio.
-        string backupPath = filePath + ".bak";
-        File.Copy(filePath, backupPath, overwrite: true);
-
-        File.WriteAllText(filePath, finalContent);
-        CacheManager.Invalidate(filePath);
+        string? backupPath = _fileRepository.BackupPath(filePath);
+        _fileRepository.WriteText(filePath, finalContent);
 
         return ToolResponse.Success(
             data: new
@@ -1108,7 +1099,7 @@ namespace B4XMcpServer.Tools
         }
 
         [McpServerTool, Description("Searches for a regex pattern across every .bas module (and optionally the .b4a/.b4j project file) in a B4X project, like grep. Returns each match with its file, line number, and the matching line's text.")]
-        public static string SearchCode(SearchCodeRequest request)
+        public string SearchCode(SearchCodeRequest request)
         {
             var projectPath = request.ProjectPath;
             var pattern = request.Pattern;
@@ -1118,7 +1109,7 @@ namespace B4XMcpServer.Tools
             if (string.IsNullOrWhiteSpace(pattern))
                 throw new ArgumentException("Pattern must not be empty.");
 
-            string? root = Directory.Exists(projectPath) ? projectPath : ProjectScanner.FindProjectRoot(projectPath);
+            string? root = Directory.Exists(projectPath) ? projectPath : _projectRepository.FindProjectRoot(projectPath);
             if (root == null)
                 throw new DirectoryNotFoundException($"Could not determine a B4X project root from '{projectPath}'.");
 
@@ -1136,7 +1127,7 @@ namespace B4XMcpServer.Tools
                 throw new ArgumentException($"Invalid regex pattern: {ex.Message}");
             }
 
-            var files = ProjectScanner.ScanProject(root)
+            var files = _projectRepository.ScanProject(root)
                 .Where(f => f.Kind == "bas" || (request.IncludeProjectFile && (f.Kind == "b4a" || f.Kind == "b4j" || f.Kind == "b4i")))
                 .ToList();
 
@@ -1185,13 +1176,11 @@ namespace B4XMcpServer.Tools
         }
 
         [McpServerTool, Description("Parses a B4X project file's project metadata into structured JSON: app type, version, referenced libraries, module list, included files, and every other raw key=value setting. Accepts the project FOLDER or the project FILE — both work. This tool is about the PROJECT as a whole (metadata, libs, modules), NOT about a single .bas module — for that use analyze_module.")]
-        public static string GetProjectConfig(
+        public string GetProjectConfig(
             [Description("Absolute path to the B4X project folder, or to its .b4a/.b4j/.b4i project file. For inspecting a single .bas module use analyze_module instead — this tool's projectPath is the project root, not a module file.")] string projectPath)
-        {
-            // Round-3 polish: relative paths are resolved by File.Exists + ProjectScanner.FindProjectFile below,
+        {            // Round-3 polish: relative paths are resolved by Exists + FindProjectFile below,
             // matching get_project_structure's leniency. Traded the round-1 absolute-path safety net for consistency.
-
-            string? projectFile = File.Exists(projectPath) ? projectPath : ProjectScanner.FindProjectFile(projectPath);
+            string? projectFile = _fileRepository.Exists(projectPath) ? projectPath : _projectRepository.FindProjectFile(projectPath);
             if (projectFile == null)
                 throw new FileNotFoundException($"No .b4a/.b4j/.b4i project file found for '{projectPath}'.");
 
@@ -1202,7 +1191,7 @@ namespace B4XMcpServer.Tools
             if (CacheManager.TryGetByMtime<string>(projectFile, out var cachedConfig) && cachedConfig != null)
                 return cachedConfig;
 
-            string raw = File.ReadAllText(projectFile);
+            string raw = _fileRepository.ReadTextWithHeader(projectFile);
 
             const string marker = "@EndOfDesignText@";
             int markerIdx = raw.IndexOf(marker, StringComparison.Ordinal);
@@ -1251,12 +1240,12 @@ namespace B4XMcpServer.Tools
             "  • #Region Activity Attributes — UNTOUCHABLE (#FullScreen, #IncludeTitle, etc.)\n" +
             "These region blocks appear BEFORE Sub Process_Globals in the source code section of .b4a/.b4j files. They are NOT editable via edit_sub — only edit_line can modify individual lines inside them if absolutely necessary.\n" +
             "Use edit_sub to modify existing Subs; use insert_line to add NEW Subs.")]
-        public static string AnalyzeModule(
+        public string AnalyzeModule(
             [Description("Absolute path to a single .bas module file. This tool takes ONE MODULE, not the whole project — for project-wide metadata (libs, NumberOfModules, etc.) use get_project_config with projectPath instead. The naming distinction (filePath vs projectPath) is intentional: analyze_module = file, get_project_config = project.")] string filePath)
         {
             PathSecurity.ValidateAbsolutePath(filePath, nameof(filePath));
 
-            if (!File.Exists(filePath))
+            if (!_fileRepository.Exists(filePath))
                 throw new FileNotFoundException($"File not found: {filePath}");
 
             string cacheKey = $"analyze:{filePath}";
@@ -1302,12 +1291,12 @@ namespace B4XMcpServer.Tools
         }
 
         [McpServerTool, Description("Statically validates every event handler Sub in a B4X project against the event signatures declared in the referenced libraries. Reports parameter count, name, and type mismatches (e.g. Int vs Double) that cause runtime crashes like java.lang.IllegalArgumentException. Also infers control types from Dim declarations and layout files.")]
-        public static string ValidateEventHandlers(
+        public string ValidateEventHandlers(
             [Description("Absolute path to the B4X project folder, or to its .b4a/.b4j/.b4i project file.")] string projectPath)
         {
             PathSecurity.ValidateAbsolutePath(projectPath, nameof(projectPath));
 
-            string? root = Directory.Exists(projectPath) ? projectPath : ProjectScanner.FindProjectRoot(projectPath);
+            string? root = Directory.Exists(projectPath) ? projectPath : _projectRepository.FindProjectRoot(projectPath);
             if (root == null)
                 throw new DirectoryNotFoundException($"Could not determine a B4X project root from '{projectPath}'.");
 
@@ -1336,16 +1325,16 @@ namespace B4XMcpServer.Tools
         }
 
         [McpServerTool, Description("Runs the B4X structural parser against every module (.bas) in a project WITHOUT compiling, and reports any structural problems found (unclosed Sub/Type/Region blocks, mismatched End statements). Near-instant sanity check.")]
-        public static string ValidateProject(
+        public string ValidateProject(
             [Description("Absolute path to the B4X project folder, or to its .b4a/.b4j project file.")] string projectPath)
         {
             PathSecurity.ValidateAbsolutePath(projectPath, nameof(projectPath));
 
-            string? root = Directory.Exists(projectPath) ? projectPath : ProjectScanner.FindProjectRoot(projectPath);
+            string? root = Directory.Exists(projectPath) ? projectPath : _projectRepository.FindProjectRoot(projectPath);
             if (root == null)
                 throw new DirectoryNotFoundException($"Could not determine a B4X project root from '{projectPath}'.");
 
-            var basFiles = ProjectScanner.ScanProject(root).Where(f => f.Kind == "bas").ToList();
+            var basFiles = _projectRepository.ScanProject(root).Where(f => f.Kind == "bas").ToList();
 
             var results = new List<object>();
             int totalIssues = 0;
@@ -1397,16 +1386,16 @@ namespace B4XMcpServer.Tools
         }
 
         [McpServerTool, Description("Lists every layout file (.bal/.bjl/.bil) in a project with basic metadata: screen variants and top-level control count.")]
-        public static string ListLayouts(
+        public string ListLayouts(
             [Description("Absolute path to the B4X project folder, or to its .b4a/.b4j project file.")] string projectPath)
         {
             PathSecurity.ValidateAbsolutePath(projectPath, nameof(projectPath));
 
-            string? root = Directory.Exists(projectPath) ? projectPath : ProjectScanner.FindProjectRoot(projectPath);
+            string? root = Directory.Exists(projectPath) ? projectPath : _projectRepository.FindProjectRoot(projectPath);
             if (root == null)
                 throw new DirectoryNotFoundException($"Could not determine a B4X project root from '{projectPath}'.");
 
-            var layoutFiles = ProjectScanner.ScanProject(root)
+            var layoutFiles = _projectRepository.ScanProject(root)
                 .Where(f => f.Kind == "bal" || f.Kind == "bjl" || f.Kind == "bil").ToList();
 
             var results = new List<object>();
@@ -1418,7 +1407,7 @@ namespace B4XMcpServer.Tools
                     string? decodedJson;
                     if (!CacheManager.TryGetByMtime<string>(f.Path, out decodedJson) || decodedJson == null)
                     {
-                        var data = File.ReadAllBytes(f.Path);
+                        var data = _fileRepository.ReadBytes(f.Path);
                         decodedJson = BalDecoder.Decode(data);
                         CacheManager.SetByMtime(f.Path, decodedJson);
                     }
@@ -1456,17 +1445,17 @@ namespace B4XMcpServer.Tools
         private const string ManifestEndMarker = "#End Region";
 
         [McpServerTool, Description("Extracts the Manifest Editor block from a B4A project file.")]
-        public static string GetManifest(
+        public string GetManifest(
             [Description("Absolute path to the .b4a project file.")] string projectPath)
         {
             PathSecurity.ValidateAbsolutePath(projectPath, nameof(projectPath));
 
-            if (!File.Exists(projectPath))
+            if (!_fileRepository.Exists(projectPath))
                 throw new FileNotFoundException($"File not found: {projectPath}");
             if (!projectPath.EndsWith(".b4a", StringComparison.OrdinalIgnoreCase))
                 throw new ArgumentException("File must have a .b4a extension.");
 
-            string raw = File.ReadAllText(projectPath);
+            string raw = _fileRepository.ReadTextWithHeader(projectPath);
 
             var block = ExtractManifestBlock(raw);
             if (block == null)
@@ -1478,18 +1467,18 @@ namespace B4XMcpServer.Tools
         }
 
         [McpServerTool, Description("Replaces the Manifest Editor block in a B4A project file. Creates a .bak backup first.")]
-        public static string WriteManifest(
+        public string WriteManifest(
             [Description("Absolute path to the .b4a project file.")] string projectPath,
             [Description("New content for the Manifest Editor block.")] string manifestContent)
         {
             PathSecurity.ValidateAbsolutePath(projectPath, nameof(projectPath));
 
-            if (!File.Exists(projectPath))
+            if (!_fileRepository.Exists(projectPath))
                 throw new FileNotFoundException($"File not found: {projectPath}");
             if (!projectPath.EndsWith(".b4a", StringComparison.OrdinalIgnoreCase))
                 throw new ArgumentException("File must have a .b4a extension.");
 
-            string raw = File.ReadAllText(projectPath);
+            string raw = _fileRepository.ReadTextWithHeader(projectPath);
 
             int startIdx = raw.IndexOf(ManifestStartMarker, StringComparison.Ordinal);
             if (startIdx < 0)
@@ -1499,20 +1488,20 @@ namespace B4XMcpServer.Tools
             if (endIdx < 0)
                 throw new InvalidOperationException("Found '#Region Manifest Editor' but no matching '#End Region'.");
 
-            File.Copy(projectPath, projectPath + ".bak", overwrite: true);
+            _fileRepository.Copy(projectPath, projectPath + ".bak", overwrite: true);
 
             var before = raw.Substring(0, startIdx + ManifestStartMarker.Length);
             var after = raw.Substring(endIdx);
             var newContent = before + "\r\n" + manifestContent.TrimEnd('\r', '\n') + "\r\n" + after;
 
-            File.WriteAllText(projectPath, newContent);
+            _fileRepository.WriteText(projectPath, newContent);
 
             return ToolResponse.Success(
                 new { projectPath, backup = projectPath + ".bak" },
                 nextSteps: new[] { "Call compile_project to verify the manifest change doesn't break the build." });
         }
 
-        private static string? ExtractManifestBlock(string raw)
+        private string? ExtractManifestBlock(string raw)
         {
             int startIdx = raw.IndexOf(ManifestStartMarker, StringComparison.Ordinal);
             if (startIdx < 0) return null;
@@ -1521,86 +1510,24 @@ namespace B4XMcpServer.Tools
             if (endIdx < 0) return null;
             return raw.Substring(contentStart, endIdx - contentStart).Trim('\r', '\n');
         }
-        [McpServerTool, Description("Creates a new .bas module file with the correct IDE metadata header. The header is REQUIRED for the B4A IDE to open the file without errors. Choose type 'activity' for a screen module or 'class' for a code module.")]
-        public static string CreateBasModule(
-        [Description("Absolute path to the .bas file to create (e.g. 'C:\\...\\Settings.bas')")] string filePath,
-        [Description("Module type: 'activity' (has Activity_Create, LoadLayout) or 'class' (code-only)")] string moduleType = "activity")
+        [McpServerTool, Description("DEPRECATED — do not use. Creating .bas modules automatically has proven unreliable and can corrupt the project. This tool now returns the exact manual steps the user must follow in the B4X IDE to create and register a new module safely.")]
+        public string CreateBasModule(
+        [Description("Ignored — kept only for signature compatibility.")] string filePath,
+        [Description("Ignored — kept only for signature compatibility.")] string moduleType = "activity")
         {
-            PathSecurity.ValidateAbsolutePath(filePath, nameof(filePath));
-
-            if (File.Exists(filePath))
-                return JsonSerializer.Serialize(new
-                {
-                    success = false,
-                    error = $"File already exists: {filePath}",
-                    hint = "Use write_file to modify an existing module, or delete it first."
-                }, JsonOptions.Default);
-
-            moduleType = moduleType.ToLowerInvariant().Trim();
-            bool isActivity = moduleType == "activity";
-            string moduleName = Path.GetFileNameWithoutExtension(filePath);
-
-            string header = $@"B4A=true
-            Group=Default Group
-            ModulesStructureVersion=1
-            Type={(isActivity ? "Activity" : "Class")}
-            Version=13.5
-            @EndOfDesignText@
-            ";
-
-            string code = isActivity
-            ? $@"#Region  Activity Attributes 
-	        #FullScreen: False
-	        #IncludeTitle: False
-            #End Region
-
-            Sub Process_Globals
-            End Sub
-
-            Sub Globals
-            End Sub
-
-            Sub Activity_Create(FirstTime As Boolean)
-	            Activity.LoadLayout(""{moduleName}"")
-            End Sub
-
-            Sub Activity_Resume
-            End Sub
-
-            Sub Activity_Pause (UserClosed As Boolean)
-            End Sub
-            "
-                            : $@"Sub Process_Globals
-            End Sub
-
-            Sub Globals
-            End Sub
-            ";
-
-            string? dir = Path.GetDirectoryName(filePath);
-            if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
-                Directory.CreateDirectory(dir);
-
-            File.WriteAllText(filePath, header + code);
-
-            // Discover the enclosing .b4a/.b4j/.b4i so the nextSteps hint is actionable;
-            // if we can't find one (caller passed a folder we don't recognise) we fall back
-            // to a project-agnostic hint rather than embedding a broken path.
-            string? projectFile = ProjectScanner.FindProjectFile(dir ?? Path.GetDirectoryName(filePath) ?? ".");
-            var nextSteps = new List<string>
-            {
-                "Call compile_project to verify the new module compiles cleanly."
-            };
-            if (projectFile != null)
-                nextSteps.Insert(0, $"Call register_module_in_project(projectFile='{projectFile}', moduleName='{moduleName}') to add this module to the project metadata.");
-
             return JsonSerializer.Serialize(new
             {
-                success = true,
-                filePath,
-                moduleName,
-                moduleType = isActivity ? "Activity" : "Class",
-                nextSteps
+                success = false,
+                error = "Automatic creation of .bas modules is disabled to prevent project corruption.",
+                instructions = new[]
+                {
+                    "1. Open the project in the B4X IDE.",
+                    "2. Go to Project → Add New Module → choose Activity Module or Class Module.",
+                    "3. Give it the desired name (e.g. Settings). The IDE will create the .bas file AND register it in the project metadata automatically.",
+                    "4. Save the project in the IDE (Ctrl+S).",
+                    "5. After the module exists on disk, you can use get_file_content / edit_sub / analyze_module on it, and compile_project to verify."
+                },
+                note = "Do NOT attempt to create the .bas file manually or register it by editing the project file — the IDE header and metadata must stay perfectly in sync."
             }, JsonOptions.Default);
         }
 
@@ -1609,7 +1536,7 @@ namespace B4XMcpServer.Tools
         // match by edit distance so the AI can self-correct on the first retry
         // instead of dumping a long sub list and asking the user to pick.
 
-        private static string? SuggestClosestSubName(string requested, List<string> available)
+        private string? SuggestClosestSubName(string requested, List<string> available)
         {
             if (available.Count == 0 || string.IsNullOrEmpty(requested)) return null;
             string lowerReq = requested.ToLowerInvariant();
@@ -1630,7 +1557,7 @@ namespace B4XMcpServer.Tools
             return bestDist <= threshold ? best : null;
         }
 
-        private static int LevenshteinDistance(string a, string b)
+        private int LevenshteinDistance(string a, string b)
         {
             if (a.Length == 0) return b.Length;
             if (b.Length == 0) return a.Length;
