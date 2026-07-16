@@ -48,11 +48,11 @@ namespace B4XMcpServer.Tools
                 },
                 new
                 {
-                    title = "NEVER create Main.bas unless the project already has one",
+                    title = "NEVER create Main.bas — write_file HARD-BLOCKS the attempt",
                     severity = "CRITICAL",
-                    description = "Most B4X projects have the main activity code inside the .b4a/.b4j file itself, NOT in a separate Main.bas. Check get_project_structure first — if Main.bas is not listed, the main code goes in the project file's source code section.",
-                    example = "DON'T: write_file('Main.bas', ...) when Main.bas doesn't exist in the project. DO: use edit_sub or write_file on the .b4a/.b4j file's source code section.",
-                    fix = "Always call get_project_structure first. If Main.bas is not in the file list, put all Activity_Create, Process_Globals, etc. directly in the .b4a/.b4j file."
+                    description = "B4X project files (.b4a/.b4j/.b4i) ARE the Main module. Their source code section is where Activity_Create, Process_Globals, AppStart, and every other Sub lives. Adding a separate Main.bas in the same directory corrupts the project instantly (duplicate Main, compile errors, IDE confusion). write_file has a hard guard against this; if it returned an error mentioning Main.bas, switch to edit_sub on the project file.",
+                    example = "DON'T: write_file('Main.bas', ...). DON'T: even read Main.bas as if it were the main module. DO: get_project_structure first; if Main.bas isn't in the file list, the code lives in the .b4a/.b4j file and you must edit_sub on it.",
+                    fix = "Call get_project_structure to confirm what files exist. If Main.bas is NOT in the list, put all activity code in the project file's source code section using edit_sub. The write_file tool returns a hard-block error if it tries to create Main.bas in any directory that already has a .b4a/.b4j/.b4i."
                 },
                 new
                 {

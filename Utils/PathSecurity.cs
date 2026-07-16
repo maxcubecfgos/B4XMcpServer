@@ -74,5 +74,75 @@ namespace B4XMcpServer.Utils
             var ext = Path.GetExtension(path).ToLowerInvariant();
             return ext == ".b4a" || ext == ".b4j" || ext == ".b4i";
         }
+
+        /// <summary>
+        /// Returns true if writing <paramref name="filePath"/> would CREATE a
+        /// brand-new <c>Main.bas</c> inside a B4X project directory that already
+        /// has its own main project file (<c>.b4a</c>/<c>.b4j</c>/<c>.b4i</c>).
+        /// In every B4X project the project file's source code section IS the
+        /// Main module — creating a separate <c>Main.bas</c> corrupts the project
+        /// instantly (duplicate Main, compile errors, IDE confusion).
+        /// <para>
+        /// Rules of the check:
+        /// <list type="bullet">
+        ///   <item><description>File name must be <c>Main.bas</c> (case-insensitive).</description></item>
+        ///   <item><description>File must NOT already exist — the corruption path is CREATION only; modifying an existing <c>Main.bas</c> that the human authored is allowed.</description></item>
+        ///   <item><description>Parent directory must contain a <c>.b4a</c>, <c>.b4j</c> or <c>.b4i</c> at the top level (B4X projects place the project file in the root).</description></item>
+        /// </list>
+        /// </para>
+        /// <paramref name="reason"/> is set to a human-readable explanation
+        /// when the call returns true, suitable for inclusion in a
+        /// <c>ToolResponse.Error</c> envelope.
+        /// </summary>
+        public static bool IsForbiddenMainBas(string filePath, out string? reason)
+        {
+            reason = null;
+            if (string.IsNullOrWhiteSpace(filePath))
+                return false;
+
+            // Case-insensitive: Windows filesystems are case-insensitive but AI
+            // callers may type any casing ("main.bas", "MAIN.BAS", ...).
+            var fileName = Path.GetFileName(filePath);
+            if (!string.Equals(fileName, "Main.bas", StringComparison.OrdinalIgnoreCase))
+                return false;
+
+            // Don't interfere with edits to an existing Main.bas — only NEW
+            // creation is the corruption path the AI keeps hitting.
+            if (File.Exists(filePath))
+                return false;
+
+            var parent = Path.GetDirectoryName(filePath);
+            if (string.IsNullOrEmpty(parent) || !Directory.Exists(parent))
+                return false;
+
+            string? projectFile = null;
+            try
+            {
+                projectFile = Directory.EnumerateFiles(parent, "*.b4a", SearchOption.TopDirectoryOnly)
+                    .Concat(Directory.EnumerateFiles(parent, "*.b4j", SearchOption.TopDirectoryOnly))
+                    .Concat(Directory.EnumerateFiles(parent, "*.b4i", SearchOption.TopDirectoryOnly))
+                    .FirstOrDefault();
+            }
+            catch
+            {
+                // Permission errors, IO errors, etc. — be conservative and don't
+                // block. The caller will surface the underlying issue.
+                return false;
+            }
+
+            if (projectFile == null)
+                return false;
+
+            string projectName = Path.GetFileName(projectFile);
+            reason =
+                $"❌ CRITICAL: Creating 'Main.bas' is blocked because '{projectName}' exists in " +
+                $"the same directory and IS the project's Main module. " +
+                $"In B4X the .b4a/.b4j/.b4i file's source code section is where every Sub " +
+                $"(Activity_Create, Process_Globals, AppStart, etc.) lives — there is no separate " +
+                $"Main.bas unless YOU (the human) explicitly authored one already. " +
+                $"Use edit_sub on the project file instead: " +
+                $"edit_sub --filePath=\"{projectFile}\" --subName=\"Activity_Create\" --newCode=\"...\"";
+            return true;
+        }
     }
 }

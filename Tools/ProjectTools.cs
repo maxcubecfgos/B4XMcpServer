@@ -128,6 +128,30 @@ namespace B4XMcpServer.Tools
             if (projectRoot != null)
                 PathSecurity.ValidateWithinBaseDirectory(filePath, projectRoot, nameof(filePath));
 
+            // CRITICAL: block CREATING a new Main.bas when the parent directory
+            // already has a B4X project file. The .b4a/.b4j IS the Main module —
+            // adding a separate Main.bas instantiates duplicate Main and corrupts
+            // the project (compile errors, IDE confusion). AI assistants keep
+            // trying this; this guard makes it a hard error rather than a soft
+            // warning that the AI scrolls past. Editing an existing Main.bas
+            // that the human explicitly authored is still allowed (File.Exists
+            // check below distinguishes the two cases).
+            if (PathSecurity.IsForbiddenMainBas(filePath, out var blockReason))
+            {
+                return JsonSerializer.Serialize(new
+                {
+                    success = false,
+                    error = blockReason,
+                    hints = new[]
+                    {
+                        "The .b4a/.b4j/.b4i file IS the project's Main module — Activity_Create / Process_Globals / AppStart live in its source code section.",
+                        "To add a Sub to the Main module, use edit_sub on the project file (NOT write_file).",
+                        "Call get_project_structure first to confirm which files exist; if Main.bas is not listed, the main code goes in the project file.",
+                        "If you previously corrupted the project by creating Main.bas, remove it manually after restoring the project file from its .bak backup."
+                    }
+                }, JsonOptions.Default);
+            }
+
             // Direct writes to existing B4X project files corrupt the IDE metadata header.
             // Only specialized tools are allowed to touch these files.
             if (File.Exists(filePath) && PathSecurity.IsMainProjectFile(filePath))
