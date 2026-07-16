@@ -316,10 +316,27 @@ namespace B4XMcpServer.Services
                 return args;
             }
 
+            // Round-3 polish: AI clients sometimes infer alternate parameter names from the
+            // [Description(...)] text rather than the SDK-marshalled parameter name. Accept the
+            // common synonyms `moduleName` (Canonical=filePath, used by analyze_module) and
+            // `layoutFile` (Canonical=layoutPath, used by get_layout_structure) as non-strict
+            // fallbacks when the canonical name is absent. Canonical still wins when both are
+            // present. The list is conservative — add aliases only when an AI session has
+            // produced reproducible confusion, never preemptively.
+            var aliasByCanonical = new System.Collections.Generic.Dictionary<string, string>(System.StringComparer.OrdinalIgnoreCase)
+            {
+                ["filePath"] = "moduleName",
+                ["layoutPath"] = "layoutFile",
+            };
+
             for (int i = 0; i < entry.Parameters.Count; i++)
             {
                 var p = entry.Parameters[i];
                 if (parsed.TryGetValue(p.Name, out var raw))
+                {
+                    args[i] = CoerceValue(raw, p.Type);
+                }
+                else if (aliasByCanonical.TryGetValue(p.Name, out var alias) && parsed.TryGetValue(alias, out raw))
                 {
                     args[i] = CoerceValue(raw, p.Type);
                 }

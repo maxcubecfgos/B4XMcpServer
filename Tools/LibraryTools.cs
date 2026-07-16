@@ -316,6 +316,9 @@ namespace B4XMcpServer.Tools
             // The Directory.Exists branch below resolves relative paths to a real project file
             // before any destructive I/O runs, so the round-1 safety net is replaced by an
             // equally strong post-resolution guard.
+            // Original round-2 rationale (`PathSecurity.ValidateAbsolutePath`) preserved in
+            // git history — see `git log feat/cli-dispatcher~3` for the WAI bug context that
+            // justified adding the guard.
             // If a directory was passed, find the project file
             if (Directory.Exists(projectFile))
             {
@@ -434,6 +437,9 @@ namespace B4XMcpServer.Tools
             // See EnableLibrary for the same rationale; symmetric removal across both
             // library-modifying tools. The Directory.Exists branch resolves relative paths
             // before any destructive I/O runs.
+            // Original round-2 rationale (`PathSecurity.ValidateAbsolutePath`) preserved in
+            // git history — see `git log feat/cli-dispatcher~3` for the WAI bug context that
+            // justified adding the guard.
             // If a directory was passed, find the project file
             if (Directory.Exists(projectFile))
             {
