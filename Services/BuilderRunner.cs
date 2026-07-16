@@ -48,6 +48,8 @@ namespace B4XMcpServer.Services
 
                 // Parsear el output — BuildOutputParser ya detecta errores y pone success=false
                 var parsed = BuildOutputParser.Parse(rawOut);
+                // Incluir raw_output para post-validación en CompileProject
+                parsed["raw_output"] = rawOut;
                 return parsed;
             }
             catch (Exception ex)

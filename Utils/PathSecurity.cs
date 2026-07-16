@@ -76,11 +76,11 @@ namespace B4XMcpServer.Utils
         }
 
         /// <summary>
-        /// Called by <c>write_file</c> (round 1) AND <c>edit_sub</c>/<c>edit_line</c>/<c>insert_line</c>/<c>delete_line</c> (round 2)
-        /// against the same corruption vector. The helper distinguishes CREATION
-        /// (<c>File.Exists == false</c>) from EDIT (<c>File.Exists == true</c>) so legitimate edits
-        /// to a pre-existing <c>Main.bas</c> the human authored are still allowed.
-        /// Called by write_file (round 1) AND edit_sub/edit_line/insert_line/delete_line (round 2) against the same corruption vector.
+        /// Called by <c>write_file</c>, <c>edit_sub</c>, <c>edit_line</c>, <c>insert_line</c>,
+        /// and <c>replace_lines</c> against the same corruption vector.
+        /// The helper distinguishes CREATION (<c>File.Exists == false</c>) from
+        /// EDIT (<c>File.Exists == true</c>) so legitimate edits to a pre-existing
+        /// <c>Main.bas</c> the human authored are still allowed.
         /// Returns true if writing <paramref name="filePath"/> would CREATE a
         /// brand-new <c>Main.bas</c> inside a B4X project directory that already
         /// has its own main project file (<c>.b4a</c>/<c>.b4j</c>/<c>.b4i</c>).

@@ -255,6 +255,38 @@ namespace B4XMcpServer.Tools
 
             bool success = buildResult.TryGetValue("success", out var s) && s is bool sb && sb;
 
+            // ── Post-parse sanity check ────────────────────────────────────
+            // The AI sometimes declares "Compilation OK" even when the compiler
+            // clearly shows errors. This scan catches errors that the parser may
+            // have missed (edge cases, unexpected error formats) and errors the
+            // AI might be tempted to ignore.
+            if (success && buildResult.TryGetValue("raw_output", out var raw) && raw is string rawStr)
+            {
+                int rawErrorCount = 0;
+                foreach (var line in rawStr.Split('\n'))
+                {
+                    var trimmed = line.Trim();
+                    if (trimmed.Contains("error:", StringComparison.OrdinalIgnoreCase) &&
+                        !trimmed.StartsWith("warning:", StringComparison.OrdinalIgnoreCase))
+                        rawErrorCount++;
+                }
+
+                if (rawErrorCount > 0)
+                {
+                    // Parser missed errors — override success=false
+                    success = false;
+                    buildResult["success"] = false;
+                    var fallbackErrors = new List<Dictionary<string, object?>>();
+                    fallbackErrors.Add(new Dictionary<string, object?>
+                    {
+                        ["message"] = $"{rawErrorCount} error(s) detected in raw compiler output but missed by the parser. Review full build output below.",
+                        ["raw"] = rawStr.Length > 2000 ? rawStr.Substring(0, 2000) + "..." : rawStr
+                    });
+                    buildResult["errors"] = fallbackErrors;
+                }
+            }
+            // ────────────────────────────────────────────────────────────────
+
             if (!success)
             {
                 var formattedErrors = BuildFormatter.Format(buildResult);
@@ -266,9 +298,13 @@ namespace B4XMcpServer.Tools
                     .Replace("\"data\": null", $"\"data\": {{ \"buildErrors\": {System.Text.Json.JsonSerializer.Serialize(formattedErrors, JsonOptions.Default)} }}");
             }
 
+            int errorCount = 0;
+            if (buildResult.TryGetValue("errors", out var errsObj) && errsObj is System.Collections.IList errsList)
+                errorCount = errsList.Count;
+
             return ToolResponse.Success(
-                data: new { builder = builderPath, message = "No errors." },
-                hints: new[] { "Use run_project or launch_debug to deploy the freshly-built binary." });
+                data: new { builder = builderPath, message = $"Compilation OK — {errorCount} error(s), 0 warnings." },
+                hints: new[] { "If you still see compilation errors in the output, run compile_project again. If it keeps reporting success, the errors may be in a different project file." });
         }
 
         /// <summary>
@@ -541,18 +577,18 @@ namespace B4XMcpServer.Tools
         // Note on parameter shape: EditSub uses individual parameters (filePath,
         // subName, newCode) rather than a single `EditSubRequest` object — same
         // convention as the rest of the line/file-editing trio (EditLine,
-        // InsertLine, DeleteLine, ReplaceLines). This avoids the ModelContextProtocol
+        // InsertLine, ReplaceLines). This avoids the ModelContextProtocol
         // SDK quirk where single-request-object methods force callers to wrap their
         // JSON args as `{"request": {...}}`, which is non-obvious and easy to get
         // wrong from the AI client side. (Audit fix 2025: this WAS bitten — every
         // flat-JSON caller (e.g. AI agents, this audit harness) hit
         // "Missing a value for required parameter 'request'" because EditSub alone
         // used the wrapped shape. All sister tools already use flat params.)
-        [McpServerTool, Description("Replaces the entire body of a single Sub in a B4X module in-place, without touching the rest of the file. Safe for .b4a/.b4j/.b4i project files because it preserves the IDE metadata header and only edits the source code section. If the Sub isn't found, returns the list of Subs that do exist in the file so the caller can retry with the correct name. Creates a .bak backup first.")]
+        [McpServerTool, Description("Replaces the entire body of a single Sub in a B4X module in-place, without touching the rest of the file. Safe for .b4a/.b4j/.b4i project files because it preserves the IDE metadata header and only edits the source code section. CRITICAL: newCode MUST include both the 'Sub ...' header line AND the matching 'End Sub' line — if you forget 'End Sub', the Sub will be corrupted. Use this for modifying existing Subs only; to add a NEW Sub use insert_line instead. If the Sub isn't found, returns the list of Subs that do exist in the file so the caller can retry with the correct name. Creates a .bak backup first.")]
         public static string EditSub(
             [Description("Absolute path to the .bas/.b4a/.b4j module file.")] string filePath,
             [Description("Exact name of the Sub to replace (case-insensitive).")] string subName,
-            [Description("The full new source of the Sub, including its 'Sub ...' header line and matching 'End Sub' line.")] string newCode)
+            [Description("The full new source of the Sub, CRITICAL: must include BOTH the 'Sub ...' header line AND the matching 'End Sub' line. Forgetting 'End Sub' corrupts the module.")] string newCode)
         {
             PathSecurity.ValidateAbsolutePath(filePath, nameof(filePath));
 
@@ -629,7 +665,30 @@ namespace B4XMcpServer.Tools
                     error = "Internal error: Sub line range out of bounds after parsing."
                 }, JsonOptions.Default);
 
-            var newLines = newCode.Replace("\r\n", "\n").TrimEnd('\n').Split('\n');
+            // Validate that newCode contains both 'Sub' and 'End Sub'.
+            // AI models commonly forget 'End Sub', which silently corrupts the module.
+            var newCodeNormalized = newCode.Replace("\r\n", "\n");
+            if (!newCodeNormalized.Trim().EndsWith("End Sub", StringComparison.OrdinalIgnoreCase) ||
+                !newCodeNormalized.Contains("Sub ", StringComparison.OrdinalIgnoreCase))
+            {
+                return ToolResponse.Error(
+                    $"CRITICAL: newCode must include BOTH the 'Sub {subName}' header AND the matching 'End Sub' line. The tool replaces the ENTIRE Sub between its Sub/End Sub boundaries — forgetting 'End Sub' will corrupt the module irreversibly.\n\n" +
+                    "✅ Correct format:\n" +
+                    $"Sub {subName} (parameters As Type)\n" +
+                    "    ' your code here\n" +
+                    "End Sub\n\n" +
+                    "❌ Wrong (missing End Sub):\n" +
+                    $"Sub {subName} (parameters As Type)\n" +
+                    "    ' your code here",
+                    hints: new[]
+                    {
+                        $"You are editing Sub '{subName}'. newCode must start with 'Sub {subName}' and end with 'End Sub'.",
+                        "If you want to ADD a new Sub, use insert_line instead of edit_sub.",
+                        "If you only want to change a few lines inside the Sub, use edit_line with specific line numbers instead of replacing the whole Sub."
+                    });
+            }
+
+            var newLines = newCodeNormalized.TrimEnd('\n').Split('\n');
             lines.RemoveRange(startIdx, endIdx - startIdx + 1);
             lines.InsertRange(startIdx, newLines);
 
@@ -660,10 +719,10 @@ namespace B4XMcpServer.Tools
     // a ModelContextProtocol SDK quirk where single-request-object methods require
     // the caller to wrap their JSON args as `{"request": {...}}`, which is non-obvious
     // and easy to get wrong from the AI client side.
-    [McpServerTool, Description("Replaces a single line in a B4X source file (.bas, .b4a, .b4j, .b4i, or any text file) by its 1-based line number, without touching the rest of the file. Use this for surgical fixes where you know exactly which line to change (e.g. fixing a typo on line 42). For .b4a/.b4j/.b4i project files the IDE metadata header is preserved automatically. Pass expectedText as an atomic safety check to abort if the line has shifted. Creates a .bak backup before writing. For replacing an entire Sub use edit_sub instead; for replacing the whole file use write_file.")]        public static string EditLine(
+    [McpServerTool, Description("Replaces a single line in a B4X source file (.bas, .b4a, .b4j, .b4i, or any text file) by its 1-based line number, without touching the rest of the file. Pass an empty string as newContent to DELETE the line (subsequent lines shift up). Use this for surgical fixes where you know exactly which line to change (e.g. fixing a typo on line 42). For .b4a/.b4j/.b4i project files the IDE metadata header is preserved automatically. Pass expectedText as an atomic safety check to abort if the line has shifted. Creates a .bak backup before writing. For replacing an entire Sub use edit_sub instead; for replacing the whole file use write_file.")]        public static string EditLine(
             [Description("Absolute path to the .bas/.b4a/.b4j/.b4i file (or any text file) to edit.")] string filePath,
             [Description("1-based line number to replace. For .b4a/.b4j/.b4i project files this counts from the FIRST LINE OF THE SOURCE CODE SECTION (after the @EndOfDesignText@ header), which matches the line numbers returned by get_file_content and analyze_module. For .bas files and other text files this counts from line 1 of the file.")] int lineNumber,
-            [Description("The new content for the line. Pass an empty string to BLANK the line (it becomes an empty line — line count is preserved). To replace one line with multiple lines, embed newline characters (\\n) in the string — each newline becomes its own line.")] string newContent,
+            [Description("The new content for the line. Pass an empty string to DELETE the line (all subsequent lines shift up). To replace one line with multiple lines, embed newline characters (\\n) in the string — each newline becomes its own line.")] string newContent,
             [Description("Optional safety check: the current line at lineNumber must exactly match this string (whitespace and all). If it does not, the edit is aborted before the file is touched — no backup is overwritten, no write happens. Use this when you're worried the file may have changed between your read and your write (e.g. another tool ran in between).")] string? expectedText = null)
         {
             PathSecurity.ValidateAbsolutePath(filePath, nameof(filePath));
@@ -757,10 +816,18 @@ namespace B4XMcpServer.Tools
                     nextSteps: new[] { "Call get_file_content, find the correct line, then call edit_line again with the right line number." });
         }
 
-        // Apply the edit (newContent may itself contain embedded newlines — each becomes
-        // its own line in the output). The split normalizes any embedded CRLF to \n.
-        var newLines = newContent.Replace("\r\n", "\n").Split('\n');
-        lines[targetIdx] = newContent;
+        // Apply the edit. Empty newContent DELETES the line (shift lines up);
+        // non-empty content replaces the line in place.
+        string[]? insertedLines = null;
+        if (string.IsNullOrEmpty(newContent))
+        {
+            lines.RemoveAt(targetIdx);
+        }
+        else
+        {
+            insertedLines = newContent.Replace("\r\n", "\n").Split('\n');
+            lines[targetIdx] = newContent;
+        }
 
         // Reassemble: header (no trailing newline — header already ends with the marker)
         // + original line ending + code section. Matches the file's original style so
@@ -787,13 +854,13 @@ namespace B4XMcpServer.Tools
                 fileHadHeader = fileHasHeader,
                 originalLine,
                 newLine = newContent,
-                // Empty NewContent blanks the line in place (line count preserved) — the
-                // 1-vs-0 distinction is meaningful enough that callers reading this field
-                // (e.g. an AI deciding whether to retry or move on) shouldn't be misled.
-                linesInserted = string.IsNullOrEmpty(newContent) ? 0 : newLines.Length,
-                linesReplaced = 1,
+                // Empty newContent DELETES the line (line count decreases by 1).
+                // Non-empty content replaces the line (line count preserved).
+                linesInserted = string.IsNullOrEmpty(newContent) ? 0 : insertedLines!.Length,
+                linesReplaced = string.IsNullOrEmpty(newContent) ? 0 : 1,
+                linesRemoved = string.IsNullOrEmpty(newContent) ? 1 : 0,
                 backup = backupPath,
-                totalEditableLines = totalLines
+                totalEditableLines = totalLines - (string.IsNullOrEmpty(newContent) ? 1 : 0)
             },
             hints: new[] { "If the edit broke something, restore from backup by copying <file>.bak back to the original file.", "Embedded newlines in NewContent were each inserted as their own line." },                nextSteps: new[] { "Call compile_project to verify the line edit doesn't break the build.", "Use get_file_content to visually confirm the change." });
     }
@@ -809,7 +876,7 @@ namespace B4XMcpServer.Tools
     {
         PathSecurity.ValidateAbsolutePath(filePath, nameof(filePath));
 
-        // Defense-in-depth: same Main.bas-creation rule as write_file, edit_sub, edit_line, delete_line.
+        // Defense-in-depth: same Main.bas-creation rule as write_file, edit_sub, edit_line, insert_line.
         // See EditSub for the full rationale. Block CREATION (File.Exists == false) only;
         // legitimate edits to a pre-existing Main.bas the human authored are still allowed.
         if (PathSecurity.IsForbiddenMainBas(filePath, out var blockReason))
@@ -907,117 +974,16 @@ namespace B4XMcpServer.Tools
             nextSteps: new[] { "Call compile_project to verify the insertion doesn't break the build.", "Use get_file_content to visually confirm the change." });
     }
 
-    // Note on parameter shape: DeleteLine uses individual parameters (filePath, lineNumber)
-    // rather than a single request object — same convention as EditLine and InsertLine.
-    // See the EditLine note above for the SDK binding rationale.
-    [McpServerTool, Description("Removes a single line from a B4X source file (.bas, .b4a, .b4j, .b4i, or any text file) by its 1-based line number, shifting all subsequent lines up. Use this for removing obsolete Subs, comment lines, or dead code without disturbing the surrounding context. For .b4a/.b4j/.b4i project files the IDE metadata header is preserved automatically. lineNumber must be in [1, totalLines]. Creates a .bak backup before writing. For replacing an existing line use edit_line; for adding new lines use insert_line; for removing an entire Sub use edit_sub; for rewriting the whole file use write_file.")]        public static string DeleteLine(
-            [Description("Absolute path to the .bas/.b4a/.b4j/.b4i file (or any text file) to edit.")] string filePath,
-            [Description("1-based line number to remove. Must be in [1, totalLines]. For .b4a/.b4j/.b4i project files this counts from the FIRST LINE OF THE SOURCE CODE SECTION (after the @EndOfDesignText@ header).")] int lineNumber)
-        {
-            PathSecurity.ValidateAbsolutePath(filePath, nameof(filePath));
 
-            // Defense-in-depth: same Main.bas-creation rule as write_file, edit_sub, edit_line, insert_line.
-            // See EditSub for the full rationale. Block CREATION (File.Exists == false) only;
-            // legitimate edits to a pre-existing Main.bas the human authored are still allowed.
-            if (PathSecurity.IsForbiddenMainBas(filePath, out var blockReason))
-            {
-                return ToolResponse.Error(
-                    blockReason,
-                    hints: new[]
-                    {
-                        "delete_line cannot create a new Main.bas in a B4X project directory — the .b4a/.b4j/.b4i is the Main module.",
-                        "To add a Sub to the project's Main, use edit_sub on the project file."
-                    });
-            }
-
-        // Same File.Exists-first pattern as EditLine / InsertLine — keeps non-existent-file
-        // errors as a clean envelope instead of letting ProjectScanner throw.
-        if (!File.Exists(filePath))
-            return ToolResponse.Error(
-                $"File not found: {filePath}",
-                hints: new[] { "Run get_project_structure to list every file in the project.", "Use absolute paths only — relative paths are rejected." });
-
-        // For destructive writes, keep them inside the project root.
-        string? projectRoot = ProjectScanner.FindProjectRoot(filePath);
-        if (projectRoot != null)
-            PathSecurity.ValidateWithinBaseDirectory(filePath, projectRoot, nameof(filePath));
-
-        // Encoding-detecting read; header-preserving so we can reassemble it below.
-        string raw = CodeUtils.DecodeFileWithFallback(filePath);
-
-        // Preserve the file's dominant line ending style (CRLF vs LF) so the IDE and
-        // version control don't see every line changed after a simple delete.
-        int crlfCount = raw.Split("\r\n", StringSplitOptions.None).Length - 1;
-        int lfCount = raw.Split('\n', StringSplitOptions.None).Length - 1 - crlfCount;
-        string lineEnding = lfCount > crlfCount ? "\n" : "\r\n";
-
-        const string marker = "@EndOfDesignText@";
-        int markerIdx = raw.IndexOf(marker, StringComparison.Ordinal);
-
-        string header = markerIdx >= 0 ? raw.Substring(0, markerIdx + marker.Length) : string.Empty;
-        string editableSection = markerIdx >= 0
-            ? raw.Substring(markerIdx + marker.Length).TrimStart('\r', '\n')
-            : raw;
-        bool fileHasHeader = markerIdx >= 0;
-
-        var lines = editableSection.Replace("\r\n", "\n").Split('\n').ToList();
-
-        // Same off-by-one fix as EditLine / InsertLine: totalLines excludes the trailing
-        // empty that Split produces for files ending in \n, but the array keeps it so
-        // reassembly preserves the file's trailing newline.
-        int totalLines = lines.Count;
-        if (totalLines > 0 && lines[^1].Length == 0)
-            totalLines--;
-
-        if (lineNumber < 1 || lineNumber > totalLines)
-            return ToolResponse.Error(
-                $"LineNumber {lineNumber} is out of range. The {(fileHasHeader ? "code section" : "file")} has {totalLines} line(s); nothing to delete.",
-                data: new { lineNumber, totalEditableLines = totalLines, fileHasHeader },
-                hints: new[] { "LineNumber is 1-based and must be in [1, totalLines].", "Use get_file_content to see current line numbers before deleting.", "Note: delete_line refuses to delete past the last line (use insert_line instead to append)." },
-                nextSteps: new[] { "Read the file again to confirm line counts, then retry with a valid line number." });
-
-        // 0-based index for the line being removed.
-        int targetIdx = lineNumber - 1;
-        string removedLine = lines[targetIdx];
-
-        // Shift every subsequent line up by one.
-        lines.RemoveAt(targetIdx);
-
-        var updatedEditable = string.Join(lineEnding, lines);
-        string finalContent = fileHasHeader
-            ? header + lineEnding + updatedEditable
-            : updatedEditable;
-
-        // Backup AFTER validation — same atomicity guarantee as EditLine / InsertLine.
-        string backupPath = filePath + ".bak";
-        File.Copy(filePath, backupPath, overwrite: true);
-
-        File.WriteAllText(filePath, finalContent);
-        CacheManager.Invalidate(filePath);
-
-        return ToolResponse.Success(
-            data: new
-            {
-                filePath,
-                lineNumber,
-                fileHadHeader = fileHasHeader,
-                removedLine,
-                linesRemoved = 1,
-                totalEditableLines = totalLines,
-                newTotalLines = totalLines - 1
-            },
-            hints: new[] { "If the deletion broke something, restore from backup by copying <file>.bak back to the original file.", "Subsequent lines shifted up automatically — no other positions changed." },
-            nextSteps: new[] { "Call compile_project to verify the deletion doesn't break the build.", "Use get_file_content to visually confirm the change." });
-    }
 
     // Note on parameter shape: ReplaceLines uses individual parameters (filePath, startLine,
     // endLine, newContent) — same convention as the rest of the line-level trio.
-    [McpServerTool, Description("Replaces a CONTIGUOUS RANGE of lines [startLine, endLine] in a B4X source file (.bas, .b4a, .b4j, .b4i, or any text file) with new content, in the spirit of edit_line but spanning multiple lines. The range is inclusive on both ends. For .b4a/.b4j/.b4i project files the IDE metadata header is preserved automatically. newContent may contain embedded newlines (\\n) — each becomes its own inserted line. Pass newContent=\"\" to BLANK the range IN PLACE — every line in [startLine, endLine] becomes an empty string, line count preserved, no shift. This MATCHES edit_line's empty=blank semantic so replace_lines(N, N, \"\") is exactly equivalent to edit_line(N, \"\"). When newContent has more lines than the original range, lines after shift DOWN; when fewer, they shift UP; when equal, no shift. For single-line precision use edit_line; for inserting new lines use insert_line; for deleting a range of lines use delete_line N times.")]
+    [McpServerTool, Description("Replaces a CONTIGUOUS RANGE of lines [startLine, endLine] in a B4X source file (.bas, .b4a, .b4j, .b4i, or any text file) with new content, in the spirit of edit_line but spanning multiple lines. The range is inclusive on both ends. For .b4a/.b4j/.b4i project files the IDE metadata header is preserved automatically. newContent may contain embedded newlines (\\n) — each becomes its own inserted line. Pass newContent=\"\" to DELETE the range entirely (lines after endLine shift up). When newContent has more lines than the original range, lines after shift DOWN; when fewer, they shift UP; when equal, no shift. For single-line precision or deleting one line use edit_line; for inserting new lines use insert_line.")]
     public static string ReplaceLines(
         [Description("Absolute path to the .bas/.b4a/.b4j/.b4i file (or any text file) to edit.")] string filePath,
         [Description("1-based START of the inclusive range to replace. Must be in [1, totalLines].")] int startLine,
         [Description("1-based END of the inclusive range to replace. Must be >= startLine and <= totalLines.")] int endLine,
-        [Description("Content that REPLACES the range. May contain embedded newline characters (\\n) — each becomes its own inserted line. An empty string DELETES the range (no blank line inserted — lines after endLine shift up).")] string newContent)
+        [Description("Content that REPLACES the range. May contain embedded newline characters (\\n) — each becomes its own inserted line. An empty string DELETES the range (no blank line inserted, lines after endLine shift up).")] string newContent)
     {
         PathSecurity.ValidateAbsolutePath(filePath, nameof(filePath));
 
@@ -1063,7 +1029,7 @@ namespace B4XMcpServer.Tools
             return ToolResponse.Error(
                 $"Invalid range [{startLine}, {endLine}]. Must satisfy 1 ≤ startLine ≤ endLine ≤ totalLines ({totalLines}).",
                 data: new { startLine, endLine, totalEditableLines = totalLines, fileHasHeader },
-                hints: new[] { "startLine and endLine are 1-based and inclusive.", "endLine must be >= startLine.", "Both must be within [1, totalLines].", "To delete a single line, use delete_line; to insert, use insert_line." },
+                hints: new[] { "startLine and endLine are 1-based and inclusive.", "endLine must be >= startLine.", "Both must be within [1, totalLines].", "To delete a single line, use edit_line(N, \"\"); to insert, use insert_line." },
                 nextSteps: new[] { "Read the file again with get_file_content to see exact line numbers, then retry with a valid range." });
 
         int startIdx = startLine - 1;
@@ -1075,19 +1041,21 @@ namespace B4XMcpServer.Tools
         for (int i = 0; i < rangeSize; i++)
             removedRange.Add(lines[startIdx + i]);
 
-        // Single unified mutation shape (RemoveRange + InsertRange) for both branches —
-        // simpler and harder to get wrong than two divergent branches. Empty newContent
-        // blanks the range IN PLACE by inserting rangeSize empty strings at the splice
-        // position, so replace_lines(N, N, "") == edit_line(N, "") — line count preserved,
-        // no shift, no insertion of trailing blanks.
-        // No TrimEnd: matches edit_line/insert_line exactly so the trio stays consistent
-        // — caller submitting "x\n" gets the same behavior across all three tools.
-        bool isEmpty = newContent.Length == 0;
-        string[] newLines = isEmpty
-            ? Enumerable.Repeat(string.Empty, rangeSize).ToArray()
-            : newContent.Replace("\r\n", "\n").Split('\n');
-        lines.RemoveRange(startIdx, rangeSize);
-        lines.InsertRange(startIdx, newLines);
+        // Empty newContent DELETES the range (RemoveRange only, no InsertRange).
+        // Non-empty content replaces with new lines (RemoveRange + InsertRange).
+        // No TrimEnd: matches edit_line/insert_line exactly so tools stay consistent
+        // — caller submitting "x\n" gets the same behavior across all tools.
+        string[]? replacedLines = null;
+        if (newContent.Length == 0)
+        {
+            lines.RemoveRange(startIdx, rangeSize);
+        }
+        else
+        {
+            replacedLines = newContent.Replace("\r\n", "\n").Split('\n');
+            lines.RemoveRange(startIdx, rangeSize);
+            lines.InsertRange(startIdx, replacedLines);
+        }
 
         var updatedEditable = string.Join(lineEnding, lines);
         string finalContent = fileHasHeader
@@ -1111,15 +1079,11 @@ namespace B4XMcpServer.Tools
                 removedRange,
                 newContent,
                 linesRemoved = rangeSize,
-                // newLines.Length is the single source of truth: empty newContent yields
-                // rangeSize empty strings (net line-count change = rangeSize - rangeSize = 0,
-                // i.e. blank-in-place); non-empty yields the raw split count (line-count
-                // change = splitcount - rangeSize, i.e. proportional shift).
-                linesInserted = newLines.Length,
+                linesInserted = replacedLines?.Length ?? 0,
                 totalEditableLines = totalLines,
-                newTotalLines = totalLines - rangeSize + newLines.Length
+                newTotalLines = totalLines - rangeSize + (replacedLines?.Length ?? 0)
             },
-            hints: new[] { "If the replace broke something, restore from backup by copying <file>.bak back to the original file.", "Embedded newlines in newContent were each inserted as their own line at the start of the range.", "Pass newContent=\"\" to delete the range entirely (no blank line inserted)." },
+            hints: new[] { "If the replace broke something, restore from backup by copying <file>.bak back to the original file.", "Embedded newlines in newContent were each inserted as their own line at the start of the range.", "Pass newContent=\"\" to delete the range entirely." },
             nextSteps: new[] { "Call compile_project to verify the replace doesn't break the build.", "Use get_file_content to visually confirm the change." });
     }
 
@@ -1277,7 +1241,16 @@ namespace B4XMcpServer.Tools
             return configJson;
         }
 
-        [McpServerTool, Description("Analyzes a SINGLE .bas module file: lists every Sub (name, parameters, return type, public/private, event handler detection), every Type declaration, and Globals presence. Also reports structural parse issues without compiling.")]
+        [McpServerTool, Description("Analyzes a SINGLE .bas, .b4a, or .b4j module file: lists every Sub (name, parameters, return type, public/private, event handler detection), every Type declaration, and Globals presence. Also reports structural parse issues without compiling.\n\n" +
+            "CRITICAL B4X STRUCTURE: The first two Subs in any module are ALWAYS:\n" +
+            "  • Sub Process_Globals — declares app-wide/process-wide variables (persist across activities).\n" +
+            "  • Sub Globals — declares activity/module-level variables.\n" +
+            "These are NOT optional — they are the ONLY valid places for global variable declarations.\n" +
+            "In .b4a/.b4j project files, the source code section also starts with:\n" +
+            "  • #Region Project Attributes — UNTOUCHABLE (#ApplicationLabel, #VersionCode, etc.)\n" +
+            "  • #Region Activity Attributes — UNTOUCHABLE (#FullScreen, #IncludeTitle, etc.)\n" +
+            "These region blocks appear BEFORE Sub Process_Globals in the source code section of .b4a/.b4j files. They are NOT editable via edit_sub — only edit_line can modify individual lines inside them if absolutely necessary.\n" +
+            "Use edit_sub to modify existing Subs; use insert_line to add NEW Subs.")]
         public static string AnalyzeModule(
             [Description("Absolute path to a single .bas module file. This tool takes ONE MODULE, not the whole project — for project-wide metadata (libs, NumberOfModules, etc.) use get_project_config with projectPath instead. The naming distinction (filePath vs projectPath) is intentional: analyze_module = file, get_project_config = project.")] string filePath)
         {
