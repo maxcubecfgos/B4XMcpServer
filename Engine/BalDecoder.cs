@@ -4,6 +4,7 @@ using System.IO;
 using System.IO.Compression;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using B4XMcpServer.Utils;
 
 namespace B4XMcpServer.Engine
@@ -29,7 +30,7 @@ namespace B4XMcpServer.Engine
             return JsonSerializer.Serialize(result, JsonOptions.Default);
         }
 
-        public static Dictionary<string, object> DecodeToObject(byte[] data)
+        public static JsonObject DecodeToObject(byte[] data)
         {
             using var ms = new MemoryStream(data);
             using var br = new BinaryReader(ms, Encoding.UTF8);
@@ -46,19 +47,20 @@ namespace B4XMcpServer.Engine
             var outerStringTable = LoadStringsCache(br);
 
             int manifestCount = br.ReadInt32();
-            var manifest = new List<Dictionary<string, object>>();
+            var manifest = new JsonArray();
             for (int i = 0; i < manifestCount; i++)
             {
-                manifest.Add(new Dictionary<string, object>
+                var entry = new JsonObject
                 {
                     ["name"] = ReadCachedString(br, outerStringTable),
                     ["javaType"] = ReadCachedString(br, outerStringTable),
                     ["csType"] = ReadCachedString(br, outerStringTable)
-                });
+                };
+                manifest.Add(entry);
             }
 
             int fileCount = br.ReadInt32();
-            var fileReferences = new List<string>();
+            var fileReferences = new JsonArray();
             for (int i = 0; i < fileCount; i++)
                 fileReferences.Add(ReadString(br));
 
@@ -69,7 +71,7 @@ namespace B4XMcpServer.Engine
             var innerStringTable = LoadStringsCache(br);
 
             int variantCount = br.ReadInt32();
-            var variants = new List<Dictionary<string, object>>();
+            var variants = new JsonArray();
             for (int i = 0; i < variantCount; i++)
                 variants.Add(ReadVariant(br));
 
@@ -89,55 +91,57 @@ namespace B4XMcpServer.Engine
 
             var rootControl = BuildControlNode(layoutData);
 
-            return new Dictionary<string, object>
+            var result = new JsonObject
             {
                 ["version"] = version,
                 ["gridSize"] = gridSize,
                 ["variants"] = variants,
                 ["manifest"] = manifest,
                 ["fileReferences"] = fileReferences,
-                ["scriptData"] = scriptData ?? new Dictionary<string, object> { ["mainScript"] = "", ["variantScripts"] = new List<object>() },
-                ["flags"] = new Dictionary<string, object> { ["c"] = flagC, ["d"] = flagD },
+                ["scriptData"] = scriptData ?? new JsonObject { ["mainScript"] = "", ["variantScripts"] = new JsonArray() },
+                ["flags"] = new JsonObject { ["c"] = flagC, ["d"] = flagD },
                 ["rootControl"] = rootControl
             };
+            return result;
         }
 
-        private static Dictionary<string, object> BuildControlNode(Dictionary<string, object> dict)
+        private static JsonObject BuildControlNode(JsonObject dict)
         {
-            var properties = new Dictionary<string, object>();
-            var children = new List<object>();
+            var properties = new JsonObject();
+            var children = new JsonArray();
 
             foreach (var kv in dict)
             {
-                if (kv.Key == ":kids" && kv.Value is Dictionary<string, object> kidsDict)
+                if (kv.Key == ":kids" && kv.Value is JsonObject kidsDict)
                 {
                     var indices = new List<int>();
-                    foreach (var ck in kidsDict.Keys)
-                        if (int.TryParse(ck, out int idx))
+                    foreach (var kvp in kidsDict)
+                        if (int.TryParse(kvp.Key, out int idx))
                             indices.Add(idx);
                     indices.Sort();
 
                     foreach (var idx in indices)
                     {
-                        if (kidsDict[idx.ToString()] is Dictionary<string, object> childDict)
+                        if (kidsDict[idx.ToString()] is JsonObject childDict)
                             children.Add(BuildControlNode(childDict));
                     }
                 }
                 else
                 {
-                    properties[kv.Key] = kv.Value;
+                    // Clone the value so it can live under a new parent (properties)
+                    // without disturbing the original dict.
+                    properties[kv.Key] = kv.Value?.DeepClone();
                 }
             }
 
-            var result = new Dictionary<string, object>
+            return new JsonObject
             {
                 ["properties"] = properties,
                 ["children"] = children
             };
-            return result;
         }
 
-        private static object? ReadScriptData(BinaryReader br)
+        private static JsonObject? ReadScriptData(BinaryReader br)
         {
             int compressedLength = br.ReadInt32();
             if (compressedLength <= 0) return null;
@@ -159,25 +163,26 @@ namespace B4XMcpServer.Engine
 
             string mainScript = ReadBinaryString(scriptBr);
             int variantCount = scriptBr.ReadInt32();
-            var variantScripts = new List<object>();
+            var variantScripts = new JsonArray();
 
             for (int i = 0; i < variantCount; i++)
             {
                 var v = ReadVariant(scriptBr);
                 string script = ReadBinaryString(scriptBr);
-                variantScripts.Add(new Dictionary<string, object> { ["variant"] = v, ["script"] = script });
+                variantScripts.Add(new JsonObject { ["variant"] = v, ["script"] = script });
             }
 
-            return new Dictionary<string, object>
+            return new JsonObject
             {
                 ["mainScript"] = mainScript,
-                ["variantScripts"] = variantScripts
+                ["variantScripts"] = variantScripts,
+                ["rawCompressedBytes"] = Convert.ToBase64String(compressed)
             };
         }
 
-        private static Dictionary<string, object> ReadVariant(BinaryReader br)
+        private static JsonObject ReadVariant(BinaryReader br)
         {
-            return new Dictionary<string, object>
+            return new JsonObject
             {
                 ["scale"] = br.ReadSingle(),
                 ["width"] = br.ReadInt32(),
@@ -196,13 +201,6 @@ namespace B4XMcpServer.Engine
 
         private static string ReadCachedString(BinaryReader br, List<string> cache)
         {
-            // The encoder ALWAYS writes a 4-byte int32 cache index via WriteStringRef,
-            // even when the cache is empty (it writes 0 for unknown strings). The old
-            // `if (cache.Count == 0) return ReadString(br);` branch would then read
-            // that int32 as a UTF-8 string length and consume that many bytes as
-            // payload, desynchronizing the stream. Always read as an int32 index so
-            // the stream stays aligned; out-of-range indices return a sentinel so the
-            // caller can still detect the issue without garbage data downstream.
             int index = br.ReadInt32();
             if (index < 0 || index >= cache.Count)
                 return $"[Cache {index}]";
@@ -233,9 +231,9 @@ namespace B4XMcpServer.Engine
             return Encoding.UTF8.GetString(data);
         }
 
-        private static Dictionary<string, object> ReadMap(BinaryReader br, List<string> cache)
+        private static JsonObject ReadMap(BinaryReader br, List<string> cache)
         {
-            var props = new Dictionary<string, object>();
+            var props = new JsonObject();
 
             while (true)
             {
@@ -245,22 +243,25 @@ namespace B4XMcpServer.Engine
                 if (type == ENDOFMAP)
                     break;
 
-                object? value = type switch
+                JsonNode? value = type switch
                 {
-                    CINT => br.ReadInt32(),
-                    CACHED_STRING => ReadCachedString(br, cache),
-                    CSTRING => new Dictionary<string, object> { ["tag"] = "String", ["value"] = ReadString(br) },
-                    CFLOAT => new Dictionary<string, object> { ["tag"] = "Float", ["value"] = br.ReadSingle() },
-                    CDOUBLE => new Dictionary<string, object> { ["tag"] = "Double", ["value"] = br.ReadDouble() },
+                    CINT => JsonValue.Create(br.ReadInt32()),
+                    CACHED_STRING => JsonValue.Create(ReadCachedString(br, cache)),
+                    CSTRING => new JsonObject { ["tag"] = "String", ["value"] = ReadString(br) },
+                    CFLOAT => new JsonObject { ["tag"] = "Float", ["value"] = br.ReadSingle() },
+                    CDOUBLE => new JsonObject { ["tag"] = "Double", ["value"] = br.ReadDouble() },
                     CMAP => ReadMap(br, cache),
-                    BOOL => br.ReadByte() == 1,
-                    CCOLOR => new Dictionary<string, object>
+                    BOOL => JsonValue.Create(br.ReadByte() == 1),
+                    CCOLOR => new JsonObject
                     {
                         ["tag"] = "Color",
-                        ["value"] = $"#{br.ReadByte():X2}{br.ReadByte():X2}{br.ReadByte():X2}{br.ReadByte():X2}"
+                        ["a"] = (int)br.ReadByte(),
+                        ["r"] = (int)br.ReadByte(),
+                        ["g"] = (int)br.ReadByte(),
+                        ["b"] = (int)br.ReadByte()
                     },
-                    ERREF => br.ReadInt32(),
-                    RECT32 => new Dictionary<string, object>
+                    ERREF => new JsonObject { ["tag"] = "ErRef", ["value"] = br.ReadInt32() },
+                    RECT32 => new JsonObject
                     {
                         ["tag"] = "Int32Rect",
                         ["x"] = (int)br.ReadInt16(),
@@ -268,11 +269,11 @@ namespace B4XMcpServer.Engine
                         ["width"] = (int)br.ReadInt16(),
                         ["height"] = (int)br.ReadInt16()
                     },
-                    CNULL => null,
+                    CNULL => JsonValue.Create((object?)null),
                     _ => throw new Exception($"Unknown BAL value type {type}")
                 };
 
-                props[key] = value!;
+                props[key] = value;
             }
 
             return props;

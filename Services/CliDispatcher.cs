@@ -280,6 +280,7 @@ namespace B4XMcpServer.Services
                 success = false,
                 error = ex.Message,
                 exceptionType = ex.GetType().FullName,
+                stackTrace = ex.StackTrace,
             }, JsonOptions.Default));
             return ExitToolError;
         }

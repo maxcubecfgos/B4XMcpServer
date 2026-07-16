@@ -93,6 +93,13 @@ namespace B4XMcpServer.Engine
             for (int i = 0; i < sortedStrings.Count; i++)
                 stringToIndex[sortedStrings[i]] = i;
 
+            // Write the sorted inner string table BEFORE the inner data block.
+            // The B4X format stores the table first so the control tree can reference
+            // indices that have already been defined.
+            bw.Write(sortedStrings.Count);
+            foreach (var s in sortedStrings)
+                WriteString(bw, s);
+
             // Pass 2: Write inner data with correct indices
             using var innerStream = new MemoryStream();
             using var iw = new BinaryWriter(innerStream, Encoding.UTF8, true);
@@ -111,11 +118,6 @@ namespace B4XMcpServer.Engine
 
             WriteEndMarker(iw);
             iw.Write(0); // embedded count
-
-            // Write the sorted string table
-            bw.Write(sortedStrings.Count);
-            foreach (var s in sortedStrings)
-                WriteString(bw, s);
 
             innerStream.Position = 0;
             innerStream.CopyTo(bw.BaseStream);
@@ -261,8 +263,9 @@ namespace B4XMcpServer.Engine
                         bw.Write(obj["value"]?.GetValue<float>() ?? 0f);
                         return;
                     case "Double":
-                        bw.Write(CDOUBLE);
-                        bw.Write(obj["value"]?.GetValue<double>() ?? 0.0);
+                        // Reference writer stores doubles as float32 (tag 7) for byte-compatibility.
+                        bw.Write(CFLOAT);
+                        bw.Write((float)(obj["value"]?.GetValue<double>() ?? 0.0));
                         return;
                     case "Bool":
                         bw.Write(BOOL);
@@ -326,8 +329,9 @@ namespace B4XMcpServer.Engine
                     }
                     else if (value.AsValue().TryGetValue<double>(out double doubleVal))
                     {
-                        bw.Write(CDOUBLE);
-                        bw.Write(doubleVal);
+                        // Reference writer stores doubles as float32 (tag 7) for byte-compatibility.
+                        bw.Write(CFLOAT);
+                        bw.Write((float)doubleVal);
                     }
                     break;
                 case JsonValueKind.String:
@@ -379,6 +383,21 @@ namespace B4XMcpServer.Engine
                 return;
             }
 
+            // If the decoder preserved the original GZip-compressed script bytes,
+            // write them back directly for a byte-identical round-trip.
+            var rawCompressedToken = scriptData["rawCompressedBytes"];
+            if (rawCompressedToken != null)
+            {
+                string? rawCompressedBase64 = rawCompressedToken.GetValue<string>();
+                if (!string.IsNullOrEmpty(rawCompressedBase64))
+                {
+                    byte[] compressedData = Convert.FromBase64String(rawCompressedBase64);
+                    bw.Write(compressedData.Length);
+                    bw.Write(compressedData);
+                    return;
+                }
+            }
+
             using var raw = new MemoryStream();
             using var rw = new BinaryWriter(raw, Encoding.UTF8, true);
 
@@ -409,10 +428,10 @@ namespace B4XMcpServer.Engine
             {
                 gz.Write(data, 0, data.Length);
             }
-            byte[] compressedData = compressed.ToArray();
+            byte[] fallbackCompressedData = compressed.ToArray();
 
-            bw.Write(compressedData.Length);
-            bw.Write(compressedData);
+            bw.Write(fallbackCompressedData.Length);
+            bw.Write(fallbackCompressedData);
         }
 
         private static void WriteBinaryString(BinaryWriter bw, string value)

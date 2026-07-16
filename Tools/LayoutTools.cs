@@ -21,151 +21,127 @@ namespace B4XMcpServer.Tools
 
         // ── Write Layout ──────────────────────────────────────────────
 
-        [McpServerTool, Description("Writes a B4X layout file (.bal or .bil) from JSON. Validates structure before writing. Creates a .bak backup before overwriting if the file exists. If the file doesn't exist, it will be created.")]
+        // write_layout is DISABLED: the internal BalEncoder does not produce a binary
+        // format compatible with the B4X IDE. Creating layouts from JSON therefore
+        // corrupts the file for IDE opening. Use create_empty_layout (which clones an
+        // existing IDE-created layout and clears it) instead.
+        [McpServerTool, Description("DISABLED. This tool is no longer available because writing a layout from JSON produces binaries incompatible with the B4X IDE. Use create_empty_layout instead.")]
         public static string WriteLayout(
             [Description("Absolute path to the .bal or .bil layout file to write")] string layoutPath,
             [Description("Layout JSON. Must contain: version, gridSize, variants, manifest, fileReferences, scriptData, flags, rootControl.")] string jsonContent)
         {
+            return JsonSerializer.Serialize(new
+            {
+                success = false,
+                error = "write_layout is disabled. The internal encoder cannot produce B4X IDE-compatible layout binaries.",
+                hint = "Use create_empty_layout to clone an existing IDE-created layout and clear its controls, then use layout_add_control / layout_remove_control / layout_move_control to modify it."
+            }, JsonOptions.Default);
+        }
+
+        // ── Create Empty Layout ──────────────────────────────────────
+
+        [McpServerTool, Description("Creates an empty B4X layout file by cloning an existing IDE-created layout in the same project and removing all of its controls. This avoids the incompatible binary format produced by writing a layout from JSON. Requires at least one existing .bal/.bjl/.bil layout in the project to use as a template.")]
+        public static string CreateEmptyLayout(
+            [Description("Absolute path to the B4X project folder.")] string projectPath,
+            [Description("Absolute path to the new empty layout file (.bal, .bil, or .bjl) to create.")] string layoutPath,
+            [Description("Optional: preferred existing layout file to use as template. If omitted, the first layout found in the project is used.")] string? templateLayoutPath = null)
+        {
+            PathSecurity.ValidateAbsolutePath(projectPath, nameof(projectPath));
             PathSecurity.ValidateAbsolutePath(layoutPath, nameof(layoutPath));
+
+            if (!Directory.Exists(projectPath))
+                return JsonSerializer.Serialize(new { success = false, error = $"Project path is not a directory: {projectPath}" }, JsonOptions.Default);
+
+            var ext = Path.GetExtension(layoutPath).ToLowerInvariant();
+            if (ext != ".bal" && ext != ".bil" && ext != ".bjl")
+                throw new ArgumentException("File must have .bal, .bil or .bjl extension");
 
             // For destructive writes, keep them inside the project root.
             string? projectRoot = ProjectScanner.FindProjectRoot(PathSecurity.GetDirectoryForProjectRoot(layoutPath));
             if (projectRoot != null)
                 PathSecurity.ValidateWithinBaseDirectory(layoutPath, projectRoot, nameof(layoutPath));
 
-            var ext = Path.GetExtension(layoutPath).ToLowerInvariant();
-            if (ext != ".bal" && ext != ".bil" && ext != ".bjl")
-                throw new ArgumentException("File must have .bal, .bil or .bjl extension");
-
-            JsonObject? json;
-            try { json = JsonNode.Parse(jsonContent)?.AsObject(); }
-            catch (Exception ex) { throw new FormatException($"Invalid JSON: {ex.Message}", ex); }
-            if (json == null) throw new FormatException("Invalid JSON: root must be an object.");
-
-            var errors = ValidateLayoutJson(json);
-            if (errors.Count > 0)
+            // Determine the template layout to clone.
+            string? sourceLayout = null;
+            if (!string.IsNullOrEmpty(templateLayoutPath))
             {
-                return JsonSerializer.Serialize(new
-                {
-                    success = false,
-                    validationErrors = errors,
-                    hint = "Fix the validation errors above and try again. Use create_empty_layout to get a valid starting template."
-                }, JsonOptions.Default);
+                if (!File.Exists(templateLayoutPath))
+                    return JsonSerializer.Serialize(new { success = false, error = $"Template layout not found: {templateLayoutPath}" }, JsonOptions.Default);
+                if (!string.Equals(Path.GetExtension(templateLayoutPath), ext, StringComparison.OrdinalIgnoreCase))
+                    return JsonSerializer.Serialize(new { success = false, error = $"Template layout extension must match target extension '{ext}'." }, JsonOptions.Default);
+                sourceLayout = templateLayoutPath;
+            }
+            else
+            {
+                string[] ignoredFolders = { "Objects", "bin", "gen", "obj", ".git", "temp", "build", ".vs", ".idea", "backup" };
+                var candidates = Directory.EnumerateFiles(projectPath, "*.*", SearchOption.AllDirectories)
+                    .Where(f =>
+                    {
+                        if (f.EndsWith(".bak", StringComparison.OrdinalIgnoreCase))
+                            return false;
+                        var rel = Path.GetRelativePath(projectPath, f);
+                        if (ignoredFolders.Any(x => rel.Split(Path.DirectorySeparatorChar).Contains(x, StringComparer.OrdinalIgnoreCase)))
+                            return false;
+                        var e = Path.GetExtension(f).ToLowerInvariant();
+                        return e == ".bal" || e == ".bjl" || e == ".bil";
+                    });
+
+                // Prefer a layout with the same extension, then one in the project's Files folder,
+                // then the shortest path (closest to the project root).
+                sourceLayout = candidates
+                    .OrderBy(f => !string.Equals(Path.GetExtension(f), ext, StringComparison.OrdinalIgnoreCase))
+                    .ThenBy(f => !Path.GetDirectoryName(f)!.EndsWith("Files", StringComparison.OrdinalIgnoreCase))
+                    .ThenBy(f => f.Length)
+                    .FirstOrDefault();
+
+                if (sourceLayout == null)
+                    return JsonSerializer.Serialize(new
+                    {
+                        success = false,
+                        error = "No existing layout file found in the project to use as a template.",
+                        hint = "Create at least one layout manually in the B4X IDE first, then call create_empty_layout again."
+                    }, JsonOptions.Default);
             }
 
-            // Backup only if file exists
-            string backupPath = layoutPath + ".bak";
-            if (File.Exists(layoutPath))
-            {
-                File.Copy(layoutPath, backupPath, overwrite: true);
-            }
-
-            // Ensure directory exists
+            // Copy the template to the target path.
             string? dir = Path.GetDirectoryName(layoutPath);
             if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
                 Directory.CreateDirectory(dir);
 
-            byte[] data;
-            try
-            {
-                data = BalEncoder.Encode(jsonContent);
-            }
-            catch (Exception ex)
-            {
-                return JsonSerializer.Serialize(new
-                {
-                    success = false,
-                    error = $"Failed to encode layout: {ex.Message}",
-                    hint = "The JSON structure may be invalid for the binary format. Use create_empty_layout to get a valid template, then modify its properties."
-                }, JsonOptions.Default);
-            }
+            File.Copy(sourceLayout, layoutPath, overwrite: true);
 
-            File.WriteAllBytes(layoutPath, data);
+            // Decode the cloned layout and strip all controls, keeping only the root.
+            var data = File.ReadAllBytes(layoutPath);
+            var decoded = BalDecoder.Decode(data);
+            var json = JsonNode.Parse(decoded)?.AsObject();
+            if (json == null)
+                return JsonSerializer.Serialize(new { success = false, error = "Failed to decode the template layout." }, JsonOptions.Default);
+
+            var rootControl = json["rootControl"] as JsonObject;
+            if (rootControl == null)
+                return JsonSerializer.Serialize(new { success = false, error = "Template layout has no root control." }, JsonOptions.Default);
+
+            // Remove all children. Keep the root control entry in the manifest so the
+            // IDE still recognizes the layout's main pane.
+            rootControl["children"] = new JsonArray();
+            json["manifest"] = CollectManifest(rootControl);
+
+            // Backup the just-copied target (we already wrote it once; backup now for safety).
+            string backupPath = layoutPath + ".bak";
+            File.Copy(layoutPath, backupPath, overwrite: true);
+
+            // Re-encode and write.
+            byte[] output = BalEncoder.Encode(json.ToJsonString());
+            File.WriteAllBytes(layoutPath, output);
 
             return JsonSerializer.Serialize(new
             {
                 success = true,
                 path = layoutPath,
-                backup = File.Exists(backupPath) ? backupPath : null,
-                bytesWritten = data.Length
+                backup = backupPath,
+                template = sourceLayout,
+                bytesWritten = output.Length
             }, JsonOptions.Default);
-        }
-
-        // ── Create Empty Layout ──────────────────────────────────────
-
-        [McpServerTool, Description("Generates a minimal valid B4X layout JSON that can be used as a starting point for write_layout. Creates an empty layout with the correct root control for the specified platform (B4A or B4J).")]
-        public static string CreateEmptyLayout(
-            [Description("Target platform: 'b4a' (Android) or 'b4j' (B4J/Desktop).")] string platform = "b4a")
-        {
-            bool isB4J = platform.ToLowerInvariant() == "b4j";
-
-            var json = new JsonObject
-            {
-                ["version"] = 5,
-                ["gridSize"] = 10,
-                ["variants"] = new JsonArray { new JsonObject { ["scale"] = 1.0, ["width"] = 320, ["height"] = 480 } },
-                ["manifest"] = new JsonArray(),
-                ["fileReferences"] = new JsonArray(),
-                ["flags"] = new JsonObject { ["c"] = false, ["d"] = false },
-                ["scriptData"] = new JsonObject
-                {
-                    ["mainScript"] = isB4J ? "'All variants script\n" : "'All variants script\nAutoScaleAll\n",
-                    ["variantScripts"] = new JsonArray()
-                }
-            };
-
-            if (isB4J)
-            {
-                json["rootControl"] = new JsonObject
-                {
-                    ["properties"] = new JsonObject
-                    {
-                        ["csType"] = Prop("StringRef", "Dbasic.Designer.MetaMain"),
-                        ["type"] = Prop("StringRef", ".PaneWrapper$ConcretePaneWrapper"),
-                        ["javaType"] = Prop("StringRef", ".PaneWrapper$ConcretePaneWrapper"),
-                        ["name"] = Prop("StringRef", "Main"),
-                        ["eventName"] = Prop("StringRef", "MainForm"),
-                        ["title"] = Prop("StringRef", "Form"),
-                        ["alpha"] = Prop("Float", 1),
-                        ["enabled"] = Prop("Bool", true),
-                        ["visible"] = Prop("Bool", true),
-                        ["handleResizeEvent"] = Prop("Bool", false),
-                        ["orientation"] = Prop("StringRef", "INHERIT"),
-                        ["borderWidth"] = Prop("Float", 0),
-                        ["cornerRadius"] = Prop("Float", 0),
-                        ["variant0"] = VariantProp(0, 0, 200, 200)
-                    },
-                    ["children"] = new JsonArray()
-                };
-            }
-            else
-            {
-                json["rootControl"] = new JsonObject
-                {
-                    ["properties"] = new JsonObject
-                    {
-                        ["csType"] = Prop("StringRef", "Dbasic.Designer.MetaActivity"),
-                        ["type"] = Prop("StringRef", ".ActivityWrapper"),
-                        ["javaType"] = Prop("StringRef", ".ActivityWrapper"),
-                        ["name"] = Prop("StringRef", "Activity"),
-                        ["eventName"] = Prop("StringRef", "Activity"),
-                        ["title"] = Prop("StringRef", "Activity"),
-                        ["fullScreen"] = Prop("Bool", false),
-                        ["includeTitle"] = Prop("Bool", true),
-                        ["visible"] = Prop("Bool", true),
-                        ["animationDuration"] = Prop("Int32", 400),
-                        ["variant0"] = VariantProp(100, 100, 100, 100)
-                    },
-                    ["children"] = new JsonArray()
-                };
-            }
-
-            // JsonNode.ToJsonString(options) needs an explicit TypeInfoResolver in .NET 8 —
-            // anonymous object Serialize calls work fine without one (the framework's reflection
-            // resolver handles the simple types), but JsonNode is polymorphic on the wire output
-            // and trips the "must specify a TypeInfoResolver" guard. DefaultJsonTypeInfoResolver
-            // lives under System.Text.Json.Serialization.Metadata (not the parent .Serialization).
-            return json.ToJsonString(JsonOptions.Default);
         }
 
         // ── List Controls ────────────────────────────────────────────

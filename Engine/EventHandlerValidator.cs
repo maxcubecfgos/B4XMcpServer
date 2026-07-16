@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
 using B4XMcpServer.Services;
 using B4XMcpServer.Utils;
@@ -345,7 +346,7 @@ namespace B4XMcpServer.Engine
                 {
                     var data = File.ReadAllBytes(layout.Path);
                     var decoded = BalDecoder.DecodeToObject(data);
-                    if (decoded.TryGetValue("rootControl", out var rootObj) && rootObj is Dictionary<string, object> rootControl)
+                    if (decoded.TryGetPropertyValue("rootControl", out var rootObj) && rootObj is JsonObject rootControl)
                     {
                         CollectControlsFromLayout(rootControl, controlTypes);
                     }
@@ -359,22 +360,23 @@ namespace B4XMcpServer.Engine
             return controlTypes;
         }
 
-        private static void CollectControlsFromLayout(Dictionary<string, object> node, Dictionary<string, string> controlTypes)
+        private static void CollectControlsFromLayout(JsonObject node, Dictionary<string, string> controlTypes)
         {
-            if (node.TryGetValue("properties", out var propsObj) && propsObj is Dictionary<string, object> props)
+            if (node.TryGetPropertyValue("properties", out var propsObj) && propsObj is JsonObject props)
             {
-                if (props.TryGetValue("name", out var nameObj) && nameObj is string name &&
-                    props.TryGetValue("type", out var typeObj) && typeObj is string type)
+                var name = props["name"]?.GetValue<string>();
+                var type = props["type"]?.GetValue<string>();
+                if (!string.IsNullOrEmpty(name) && !string.IsNullOrEmpty(type))
                 {
                     controlTypes[name] = type;
                 }
             }
 
-            if (node.TryGetValue("children", out var kidsObj) && kidsObj is List<object> kids)
+            if (node.TryGetPropertyValue("children", out var kidsObj) && kidsObj is JsonArray kids)
             {
                 foreach (var kid in kids)
                 {
-                    if (kid is Dictionary<string, object> kidDict)
+                    if (kid is JsonObject kidDict)
                         CollectControlsFromLayout(kidDict, controlTypes);
                 }
             }
