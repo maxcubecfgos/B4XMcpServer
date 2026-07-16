@@ -306,7 +306,11 @@ namespace B4XMcpServer.Services
                 // Methods
                 foreach (var m in cls.Elements("method"))
                 {
-                    var mName = m.Attribute("name")?.Value ?? "?";
+                    // User-feedback (AI external, round 2): the previous fallback "?\" made
+                    // it look like a real symbol name to LLMs (e.g. jSystemTray, CSSUtils).
+                    // Self-describing label so the AI sees immediately that the source XML
+                    // doc is incomplete and shouldn't be trusted for signatures.
+                    var mName = m.Attribute("name")?.Value ?? "(missing from XML doc)";
                     var retType = ShortType(m.Attribute("returnType")?.Value ?? "");
                     var parameters = string.Join(", ", m.Elements("parameter").Select(p =>
                     {
@@ -329,7 +333,8 @@ namespace B4XMcpServer.Services
                 // Properties
                 foreach (var p in cls.Elements("property"))
                 {
-                    var pName = p.Attribute("name")?.Value ?? "?";
+                    // See method-loop comment above for why "?\" was misleading.
+                    var pName = p.Attribute("name")?.Value ?? "(missing from XML doc)";
                     var pType = ShortType(p.Attribute("type")?.Value ?? "");
                     var comment = p.Element("comment")?.Value?.Trim() ?? "";
 
@@ -345,7 +350,8 @@ namespace B4XMcpServer.Services
                 // Events
                 foreach (var ev in cls.Elements("event"))
                 {
-                    var evName = ev.Attribute("name")?.Value ?? "?";
+                    // See method-loop comment above for why "?\" was misleading.
+                    var evName = ev.Attribute("name")?.Value ?? "(missing from XML doc)";
                     var parameters = string.Join(", ", ev.Elements("parameter").Select(p =>
                     {
                         var pName = p.Attribute("name")?.Value ?? "";

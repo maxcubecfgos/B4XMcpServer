@@ -138,11 +138,20 @@ namespace B4XMcpServer.Tools
                 {
                     module = string.IsNullOrWhiteSpace(m.Module)
         ? null
-        : m.Module,
+        : m.Module,                kind = m.Kind,
 
-                    kind = m.Kind,
+                // Round-3 polish: expose name + returnType + parameters as dedicated
+                // JSON fields so consumers can match by name rather than parsing the
+                // synthetic signature. The (missing from XML doc) placeholder from
+                // round 2 flows through both `name` and `signature` consistently when
+                // the source XML doc omitted the `name=` attribute.
+                name = m.Name,
 
-                    signature =
+                returnType = m.ReturnType,
+
+                parameters = m.Parameters,
+
+                signature =
         !string.IsNullOrEmpty(m.Signature)
             ? m.Signature
             : m.Kind switch
@@ -302,6 +311,14 @@ namespace B4XMcpServer.Tools
         [Description("Absolute path to the .b4a/.b4j/.b4i project file, or to the project folder.")] string projectFile,
         [Description("Library name to enable (must match exactly as shown in list_project_libraries or list_available_libraries).")] string libraryName)
         {
+            // User-feedback (AI external, round 3): trading the round-1 absolute-path guard for
+            // path-policy consistency with get_project_structure (which already accepts ".").
+            // The Directory.Exists branch below resolves relative paths to a real project file
+            // before any destructive I/O runs, so the round-1 safety net is replaced by an
+            // equally strong post-resolution guard.
+            // Original round-2 rationale (`PathSecurity.ValidateAbsolutePath`) preserved in
+            // git history — see `git log feat/cli-dispatcher~3` for the WAI bug context that
+            // justified adding the guard.
             // If a directory was passed, find the project file
             if (Directory.Exists(projectFile))
             {
@@ -415,6 +432,14 @@ namespace B4XMcpServer.Tools
             [Description("Absolute path to the .b4a/.b4j/.b4i project file, or to the project folder.")] string projectFile,
             [Description("Library name to disable (exact name as shown in list_project_libraries).")] string libraryName)
         {
+            // User-feedback (AI external, round 3): trading the round-1 absolute-path guard for
+            // path-policy consistency with get_project_structure (which already accepts ".").
+            // See EnableLibrary for the same rationale; symmetric removal across both
+            // library-modifying tools. The Directory.Exists branch resolves relative paths
+            // before any destructive I/O runs.
+            // Original round-2 rationale (`PathSecurity.ValidateAbsolutePath`) preserved in
+            // git history — see `git log feat/cli-dispatcher~3` for the WAI bug context that
+            // justified adding the guard.
             // If a directory was passed, find the project file
             if (Directory.Exists(projectFile))
             {

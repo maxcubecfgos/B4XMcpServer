@@ -97,7 +97,7 @@ namespace B4XMcpServer.Tools
             return JsonSerializer.Serialize(result, JsonOptions.Default);
         }
 
-        [McpServerTool, Description("Returns the full text content of a file (B4X module .bas, project file .b4a/.b4j/.b4i, or any other text file). For .bas files, strips the IDE metadata header automatically. For .b4a/.b4j files, returns the clean source code only.")]
+        [McpServerTool, Description("Returns the full text content of a file (B4X module .bas, project file .b4a/.b4j/.b4i, or any other text file). For .bas and project files (.b4a/.b4j/.b4i), strips the IDE metadata header automatically ONLY when the @EndOfDesignText@ marker is present; if the marker is missing, returns the full content including any header.")]
         public static string GetFileContent(
             [Description("Absolute path to the file to read.")] string filePath)
         {
@@ -529,6 +529,25 @@ namespace B4XMcpServer.Tools
         {
             PathSecurity.ValidateAbsolutePath(filePath, nameof(filePath));
 
+            // Defense-in-depth for the same Main.bas-creation rule that write_file
+            // already enforces (round 1). Without this guard, an AI that learned
+            // write_file blocks Main.bas could still construct Main.bas line-by-line
+            // by repeatedly calling edit_sub + insert_line on a not-yet-existing
+            // <dir>/Main.bas — corrupting the project with the same fatal impact as
+            // a single write_file. The guard distinguishes CREATION (File.Exists
+            // == false, blocked) from EDIT (File.Exists == true, allowed), so
+            // legitimate edits to a Main.bas the human authored still go through.
+            if (PathSecurity.IsForbiddenMainBas(filePath, out var blockReason))
+            {
+                return ToolResponse.Error(
+                    blockReason,
+                    hints: new[]
+                    {
+                        "The .b4a/.b4j/.b4i file IS the project's Main module REGARDLESS of what it is named — adding code there with edit_sub is the supported path, not building Main.bas from scratch here.",
+                        "If you previously corrupted the project by creating Main.bas line-by-line, remove it manually after restoring the project file from its .bak backup."
+                    });
+            }
+
             // For destructive writes, keep them inside the project root.
             string? projectRoot = ProjectScanner.FindProjectRoot(filePath);
             if (projectRoot != null)
@@ -614,16 +633,30 @@ namespace B4XMcpServer.Tools
     // a ModelContextProtocol SDK quirk where single-request-object methods require
     // the caller to wrap their JSON args as `{"request": {...}}`, which is non-obvious
     // and easy to get wrong from the AI client side.
-    [McpServerTool, Description("Replaces a single line in a B4X source file (.bas, .b4a, .b4j, .b4i, or any text file) by its 1-based line number, without touching the rest of the file. Use this for surgical fixes where you know exactly which line to change (e.g. fixing a typo on line 42). For .b4a/.b4j/.b4i project files the IDE metadata header is preserved automatically. Pass expectedText as an atomic safety check to abort if the line has shifted. Creates a .bak backup before writing. For replacing an entire Sub use edit_sub instead; for replacing the whole file use write_file.")]
-    public static string EditLine(
-        [Description("Absolute path to the .bas/.b4a/.b4j/.b4i file (or any text file) to edit.")] string filePath,
-        [Description("1-based line number to replace. For .b4a/.b4j/.b4i project files this counts from the FIRST LINE OF THE SOURCE CODE SECTION (after the @EndOfDesignText@ header), which matches the line numbers returned by get_file_content and analyze_module. For .bas files and other text files this counts from line 1 of the file.")] int lineNumber,
-        [Description("The new content for the line. Pass an empty string to BLANK the line (it becomes an empty line — line count is preserved). To replace one line with multiple lines, embed newline characters (\\n) in the string — each newline becomes its own line.")] string newContent,
-        [Description("Optional safety check: the current line at lineNumber must exactly match this string (whitespace and all). If it does not, the edit is aborted before the file is touched — no backup is overwritten, no write happens. Use this when you're worried the file may have changed between your read and your write (e.g. another tool ran in between).")] string? expectedText = null)
-    {
-        PathSecurity.ValidateAbsolutePath(filePath, nameof(filePath));
+    [McpServerTool, Description("Replaces a single line in a B4X source file (.bas, .b4a, .b4j, .b4i, or any text file) by its 1-based line number, without touching the rest of the file. Use this for surgical fixes where you know exactly which line to change (e.g. fixing a typo on line 42). For .b4a/.b4j/.b4i project files the IDE metadata header is preserved automatically. Pass expectedText as an atomic safety check to abort if the line has shifted. Creates a .bak backup before writing. For replacing an entire Sub use edit_sub instead; for replacing the whole file use write_file.")]        public static string EditLine(
+            [Description("Absolute path to the .bas/.b4a/.b4j/.b4i file (or any text file) to edit.")] string filePath,
+            [Description("1-based line number to replace. For .b4a/.b4j/.b4i project files this counts from the FIRST LINE OF THE SOURCE CODE SECTION (after the @EndOfDesignText@ header), which matches the line numbers returned by get_file_content and analyze_module. For .bas files and other text files this counts from line 1 of the file.")] int lineNumber,
+            [Description("The new content for the line. Pass an empty string to BLANK the line (it becomes an empty line — line count is preserved). To replace one line with multiple lines, embed newline characters (\\n) in the string — each newline becomes its own line.")] string newContent,
+            [Description("Optional safety check: the current line at lineNumber must exactly match this string (whitespace and all). If it does not, the edit is aborted before the file is touched — no backup is overwritten, no write happens. Use this when you're worried the file may have changed between your read and your write (e.g. another tool ran in between).")] string? expectedText = null)
+        {
+            PathSecurity.ValidateAbsolutePath(filePath, nameof(filePath));
 
-        // File existence check BEFORE ProjectScanner.FindProjectRoot — the scanner
+            // Defense-in-depth: same Main.bas-creation rule as write_file and edit_sub.
+            // See EditSub for the full rationale. Block CREATION (File.Exists == false)
+            // only — legitimate edits to a pre-existing Main.bas the human authored are
+            // still allowed.
+            if (PathSecurity.IsForbiddenMainBas(filePath, out var blockReason))
+            {
+                return ToolResponse.Error(
+                    blockReason,
+                    hints: new[]
+                    {
+                        "edit_line cannot create a new Main.bas in a B4X project directory — the .b4a/.b4j/.b4i is the Main module.",
+                        "To add a Sub to the project's Main, use edit_sub on the project file."
+                    });
+            }
+
+            // File existence check BEFORE ProjectScanner.FindProjectRoot — the scanner
         // walks up looking for project markers and may throw on non-existent paths,
         // which would surface to the AI as a generic MCP error instead of our clean
         // ToolResponse.Error envelope. Doing File.Exists first keeps the error path
@@ -744,6 +777,20 @@ namespace B4XMcpServer.Tools
     {
         PathSecurity.ValidateAbsolutePath(filePath, nameof(filePath));
 
+        // Defense-in-depth: same Main.bas-creation rule as write_file, edit_sub, edit_line, delete_line.
+        // See EditSub for the full rationale. Block CREATION (File.Exists == false) only;
+        // legitimate edits to a pre-existing Main.bas the human authored are still allowed.
+        if (PathSecurity.IsForbiddenMainBas(filePath, out var blockReason))
+        {
+            return ToolResponse.Error(
+                blockReason,
+                hints: new[]
+                {
+                    "insert_line cannot create a new Main.bas in a B4X project directory — the .b4a/.b4j/.b4i is the Main module.",
+                    "To add a Sub to the project's Main, use edit_sub on the project file."
+                });
+        }
+
         // Same File.Exists-first pattern as EditLine — keeps non-existent-file errors
         // as a clean envelope instead of letting ProjectScanner throw into the MCP transport.
         if (!File.Exists(filePath))
@@ -825,12 +872,25 @@ namespace B4XMcpServer.Tools
     // Note on parameter shape: DeleteLine uses individual parameters (filePath, lineNumber)
     // rather than a single request object — same convention as EditLine and InsertLine.
     // See the EditLine note above for the SDK binding rationale.
-    [McpServerTool, Description("Removes a single line from a B4X source file (.bas, .b4a, .b4j, .b4i, or any text file) by its 1-based line number, shifting all subsequent lines up. Use this for removing obsolete Subs, comment lines, or dead code without disturbing the surrounding context. For .b4a/.b4j/.b4i project files the IDE metadata header is preserved automatically. lineNumber must be in [1, totalLines]. Creates a .bak backup before writing. For replacing an existing line use edit_line; for adding new lines use insert_line; for removing an entire Sub use edit_sub; for rewriting the whole file use write_file.")]
-    public static string DeleteLine(
-        [Description("Absolute path to the .bas/.b4a/.b4j/.b4i file (or any text file) to edit.")] string filePath,
-        [Description("1-based line number to remove. Must be in [1, totalLines]. For .b4a/.b4j/.b4i project files this counts from the FIRST LINE OF THE SOURCE CODE SECTION (after the @EndOfDesignText@ header).")] int lineNumber)
-    {
-        PathSecurity.ValidateAbsolutePath(filePath, nameof(filePath));
+    [McpServerTool, Description("Removes a single line from a B4X source file (.bas, .b4a, .b4j, .b4i, or any text file) by its 1-based line number, shifting all subsequent lines up. Use this for removing obsolete Subs, comment lines, or dead code without disturbing the surrounding context. For .b4a/.b4j/.b4i project files the IDE metadata header is preserved automatically. lineNumber must be in [1, totalLines]. Creates a .bak backup before writing. For replacing an existing line use edit_line; for adding new lines use insert_line; for removing an entire Sub use edit_sub; for rewriting the whole file use write_file.")]        public static string DeleteLine(
+            [Description("Absolute path to the .bas/.b4a/.b4j/.b4i file (or any text file) to edit.")] string filePath,
+            [Description("1-based line number to remove. Must be in [1, totalLines]. For .b4a/.b4j/.b4i project files this counts from the FIRST LINE OF THE SOURCE CODE SECTION (after the @EndOfDesignText@ header).")] int lineNumber)
+        {
+            PathSecurity.ValidateAbsolutePath(filePath, nameof(filePath));
+
+            // Defense-in-depth: same Main.bas-creation rule as write_file, edit_sub, edit_line, insert_line.
+            // See EditSub for the full rationale. Block CREATION (File.Exists == false) only;
+            // legitimate edits to a pre-existing Main.bas the human authored are still allowed.
+            if (PathSecurity.IsForbiddenMainBas(filePath, out var blockReason))
+            {
+                return ToolResponse.Error(
+                    blockReason,
+                    hints: new[]
+                    {
+                        "delete_line cannot create a new Main.bas in a B4X project directory — the .b4a/.b4j/.b4i is the Main module.",
+                        "To add a Sub to the project's Main, use edit_sub on the project file."
+                    });
+            }
 
         // Same File.Exists-first pattern as EditLine / InsertLine — keeps non-existent-file
         // errors as a clean envelope instead of letting ProjectScanner throw.
@@ -1021,8 +1081,13 @@ namespace B4XMcpServer.Tools
             [Description(".NET regular expression to search for, matched against each line of every .bas file (case-insensitive).")]
             public string Pattern { get; set; } = string.Empty;
 
-            [Description("Optional: also search inside the .b4a/.b4j project file's code section, not just .bas modules. Default false.")]
-            public bool IncludeProjectFile { get; set; } = false;
+            // User-feedback (AI external): the natural mental model is "search_code searches
+            // the whole project", which by definition includes the .b4a/.b4j project's source
+            // code section, not just the .bas modules. AI callers kept omitting this flag and
+            // hitting 0 matches on code that lived inside the project file. Default true so the
+            // common path Just Works; callers can still opt out with IncludeProjectFile=false.
+            [Description("Also search inside the .b4a/.b4j/.b4i project file's code section in addition to .bas modules. Default true — the natural mental model of \"search the project\" includes the project file. Set to false to restrict the search to .bas modules only.")]
+            public bool IncludeProjectFile { get; set; } = true;
 
             [Description("Maximum number of matches to return, to avoid flooding context on overly broad patterns. Default 200.")]
             public int MaxResults { get; set; } = 200;
@@ -1105,11 +1170,12 @@ namespace B4XMcpServer.Tools
             }, JsonOptions.Default);
         }
 
-        [McpServerTool, Description("Parses a B4X project file's project metadata into structured JSON: app type, version, referenced libraries, module list, included files, and every other raw key=value setting.")]
+        [McpServerTool, Description("Parses a B4X project file's project metadata into structured JSON: app type, version, referenced libraries, module list, included files, and every other raw key=value setting. Accepts the project FOLDER or the project FILE — both work. This tool is about the PROJECT as a whole (metadata, libs, modules), NOT about a single .bas module — for that use analyze_module.")]
         public static string GetProjectConfig(
-            [Description("Absolute path to the B4X project folder, or to its .b4a/.b4j/.b4i project file.")] string projectPath)
+            [Description("Absolute path to the B4X project folder, or to its .b4a/.b4j/.b4i project file. For inspecting a single .bas module use analyze_module instead — this tool's projectPath is the project root, not a module file.")] string projectPath)
         {
-            PathSecurity.ValidateAbsolutePath(projectPath, nameof(projectPath));
+            // Round-3 polish: relative paths are resolved by File.Exists + ProjectScanner.FindProjectFile below,
+            // matching get_project_structure's leniency. Traded the round-1 absolute-path safety net for consistency.
 
             string? projectFile = File.Exists(projectPath) ? projectPath : ProjectScanner.FindProjectFile(projectPath);
             if (projectFile == null)
@@ -1161,9 +1227,9 @@ namespace B4XMcpServer.Tools
             return configJson;
         }
 
-        [McpServerTool, Description("Analyzes a single B4X module (.bas): lists every Sub (name, parameters, return type, public/private, event handler detection), every Type declaration, and Globals presence. Also reports structural parse issues without compiling.")]
+        [McpServerTool, Description("Analyzes a SINGLE .bas module file: lists every Sub (name, parameters, return type, public/private, event handler detection), every Type declaration, and Globals presence. Also reports structural parse issues without compiling.")]
         public static string AnalyzeModule(
-            [Description("Absolute path to the .bas module file.")] string filePath)
+            [Description("Absolute path to a single .bas module file. This tool takes ONE MODULE, not the whole project — for project-wide metadata (libs, NumberOfModules, etc.) use get_project_config with projectPath instead. The naming distinction (filePath vs projectPath) is intentional: analyze_module = file, get_project_config = project.")] string filePath)
         {
             PathSecurity.ValidateAbsolutePath(filePath, nameof(filePath));
 
