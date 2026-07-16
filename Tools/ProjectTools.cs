@@ -97,7 +97,7 @@ namespace B4XMcpServer.Tools
             return JsonSerializer.Serialize(result, JsonOptions.Default);
         }
 
-        [McpServerTool, Description("Returns the full text content of a file (B4X module .bas, project file .b4a/.b4j/.b4i, or any other text file). For .bas files, strips the IDE metadata header automatically. For .b4a/.b4j files, returns the clean source code only.")]
+        [McpServerTool, Description("Returns the full text content of a file (B4X module .bas, project file .b4a/.b4j/.b4i, or any other text file). For .bas and project files (.b4a/.b4j/.b4i), strips the IDE metadata header automatically ONLY when the @EndOfDesignText@ marker is present; if the marker is missing, returns the full content including any header.")]
         public static string GetFileContent(
             [Description("Absolute path to the file to read.")] string filePath)
         {
@@ -1174,7 +1174,8 @@ namespace B4XMcpServer.Tools
         public static string GetProjectConfig(
             [Description("Absolute path to the B4X project folder, or to its .b4a/.b4j/.b4i project file. For inspecting a single .bas module use analyze_module instead — this tool's projectPath is the project root, not a module file.")] string projectPath)
         {
-            PathSecurity.ValidateAbsolutePath(projectPath, nameof(projectPath));
+            // Round-3 polish: relative paths are resolved by File.Exists + ProjectScanner.FindProjectFile below,
+            // matching get_project_structure's leniency. Traded the round-1 absolute-path safety net for consistency.
 
             string? projectFile = File.Exists(projectPath) ? projectPath : ProjectScanner.FindProjectFile(projectPath);
             if (projectFile == null)
