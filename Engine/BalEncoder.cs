@@ -3,7 +3,8 @@ using System.Collections.Generic;
 using System.IO;
 using System.IO.Compression;
 using System.Text;
-using Newtonsoft.Json.Linq;
+using System.Text.Json;
+using System.Text.Json.Nodes;
 
 namespace B4XMcpServer.Engine
 {
@@ -24,36 +25,38 @@ namespace B4XMcpServer.Engine
 
         public static byte[] Encode(string json)
         {
-            var root = JObject.Parse(json);
+            var root = JsonNode.Parse(json)?.AsObject();
+            if (root == null)
+                throw new FormatException("Invalid JSON: root must be an object.");
             return Encode(root);
         }
 
-        public static byte[] Encode(JObject root)
+        public static byte[] Encode(JsonObject root)
         {
             using var ms = new MemoryStream();
             using var bw = new BinaryWriter(ms, Encoding.UTF8, true);
 
-            int version = root["version"]?.Value<int>() ?? 5;
+            int version = root["version"]?.GetValue<int>() ?? 5;
             bw.Write(version);
 
             long lengthPos = bw.BaseStream.Position;
             bw.Write(0); // placeholder
 
-            int gridSize = root["gridSize"]?.Value<int>() ?? 10;
+            int gridSize = root["gridSize"]?.GetValue<int>() ?? 10;
             bw.Write(gridSize);
 
             var outerTable = new Dictionary<string, int>();
 
             // Manifest
-            var manifest = root["manifest"] as JArray ?? new JArray();
+            var manifest = root["manifest"] as JsonArray ?? new JsonArray();
             using var manifestStream = new MemoryStream();
             using var mw = new BinaryWriter(manifestStream, Encoding.UTF8, true);
             mw.Write(manifest.Count);
             foreach (var entry in manifest)
             {
-                WriteCachedString(mw, outerTable, entry["name"]?.ToString() ?? "");
-                WriteCachedString(mw, outerTable, entry["javaType"]?.ToString() ?? "");
-                WriteCachedString(mw, outerTable, entry["csType"]?.ToString() ?? "");
+                WriteCachedString(mw, outerTable, entry?["name"]?.GetValue<string>() ?? "");
+                WriteCachedString(mw, outerTable, entry?["javaType"]?.GetValue<string>() ?? "");
+                WriteCachedString(mw, outerTable, entry?["csType"]?.GetValue<string>() ?? "");
             }
 
             WriteStringsCache(bw, outerTable);
@@ -61,13 +64,13 @@ namespace B4XMcpServer.Engine
             manifestStream.CopyTo(bw.BaseStream);
 
             // File references
-            var fileRefs = root["fileReferences"] as JArray ?? new JArray();
+            var fileRefs = root["fileReferences"] as JsonArray ?? new JsonArray();
             bw.Write(fileRefs.Count);
             foreach (var f in fileRefs)
-                WriteString(bw, f.ToString());
+                WriteString(bw, f?.GetValue<string>() ?? "");
 
             // Script data
-            WriteScriptData(bw, root["scriptData"] as JObject, root["variants"] as JArray);
+            WriteScriptData(bw, root["scriptData"] as JsonObject, root["variants"] as JsonArray);
 
             long headerEnd = bw.BaseStream.Position;
             bw.BaseStream.Position = lengthPos;
@@ -78,7 +81,7 @@ namespace B4XMcpServer.Engine
 
             // Pass 1: Collect all strings from the control tree
             var allStrings = new HashSet<string>();
-            if (root["rootControl"] is JObject rootControl)
+            if (root["rootControl"] is JsonObject rootControl)
                 CollectStrings(rootControl, allStrings);
 
             // Sort alphabetically (Ordinal for byte-identical sort)
@@ -94,16 +97,16 @@ namespace B4XMcpServer.Engine
             using var innerStream = new MemoryStream();
             using var iw = new BinaryWriter(innerStream, Encoding.UTF8, true);
 
-            var variants = root["variants"] as JArray ?? new JArray();
+            var variants = root["variants"] as JsonArray ?? new JsonArray();
             iw.Write(variants.Count);
             foreach (var v in variants)
             {
-                iw.Write(v["scale"]?.Value<float>() ?? 1f);
-                iw.Write(v["width"]?.Value<int>() ?? 320);
-                iw.Write(v["height"]?.Value<int>() ?? 480);
+                iw.Write(v?["scale"]?.GetValue<float>() ?? 1f);
+                iw.Write(v?["width"]?.GetValue<int>() ?? 320);
+                iw.Write(v?["height"]?.GetValue<int>() ?? 480);
             }
 
-            if (root["rootControl"] is JObject rc)
+            if (root["rootControl"] is JsonObject rc)
                 WriteControlTree(iw, stringToIndex, rc);
 
             WriteEndMarker(iw);
@@ -118,50 +121,50 @@ namespace B4XMcpServer.Engine
             innerStream.CopyTo(bw.BaseStream);
 
             // Trailing flags
-            var flags = root["flags"] as JObject;
-            bw.Write(flags?["c"]?.Value<bool>() == true ? (byte)1 : (byte)0);
-            bw.Write(flags?["d"]?.Value<bool>() == true ? (byte)1 : (byte)0);
+            var flags = root["flags"] as JsonObject;
+            bw.Write(flags?["c"]?.GetValue<bool>() == true ? (byte)1 : (byte)0);
+            bw.Write(flags?["d"]?.GetValue<bool>() == true ? (byte)1 : (byte)0);
 
             return ms.ToArray();
         }
 
         // ── Pass 1: Collect all strings ──────────────────────────────
 
-        private static void CollectStrings(JObject node, HashSet<string> strings)
+        private static void CollectStrings(JsonObject node, HashSet<string> strings)
         {
-            var properties = node["properties"] as JObject;
+            var properties = node["properties"] as JsonObject;
             if (properties != null)
             {
-                foreach (var prop in properties.Properties())
+                foreach (var prop in properties)
                 {
                     // Key is always a string
-                    strings.Add(prop.Name);
+                    strings.Add(prop.Key);
                     CollectStringsFromValue(prop.Value, strings);
                 }
             }
 
-            var children = node["children"] as JArray;
+            var children = node["children"] as JsonArray;
             if (children != null && children.Count > 0)
             {
                 strings.Add(":kids");
                 for (int i = 0; i < children.Count; i++)
                 {
                     strings.Add(i.ToString());
-                    if (children[i] is JObject child)
+                    if (children[i] is JsonObject child)
                         CollectStrings(child, strings);
                 }
             }
         }
 
-        private static void CollectStringsFromValue(JToken value, HashSet<string> strings)
+        private static void CollectStringsFromValue(JsonNode? value, HashSet<string> strings)
         {
-            if (value is JObject obj && obj["tag"] != null)
+            if (value is JsonObject obj && obj["tag"] != null)
             {
-                string tag = obj["tag"]?.ToString() ?? "";
+                string tag = obj["tag"]?.GetValue<string>() ?? "";
 
                 if (tag == "StringRef")
                 {
-                    strings.Add(obj["value"]?.ToString() ?? "");
+                    strings.Add(obj["value"]?.GetValue<string>() ?? "");
                 }
                 else if (tag == "String")
                 {
@@ -169,23 +172,23 @@ namespace B4XMcpServer.Engine
                 }
                 else if (tag == "Object")
                 {
-                    var nested = obj["value"] as JObject;
+                    var nested = obj["value"] as JsonObject;
                     if (nested != null)
                     {
-                        foreach (var p in nested.Properties())
+                        foreach (var p in nested)
                         {
-                            strings.Add(p.Name);
+                            strings.Add(p.Key);
                             CollectStringsFromValue(p.Value, strings);
                         }
                     }
                 }
             }
-            else if (value is JObject nestedObj && nestedObj["tag"] == null)
+            else if (value is JsonObject nestedObj && nestedObj["tag"] == null)
             {
                 // Untagged object (like drawable) — collect its keys
-                foreach (var p in nestedObj.Properties())
+                foreach (var p in nestedObj)
                 {
-                    strings.Add(p.Name);
+                    strings.Add(p.Key);
                     CollectStringsFromValue(p.Value, strings);
                 }
             }
@@ -193,22 +196,22 @@ namespace B4XMcpServer.Engine
 
         // ── Pass 2: Write control tree ───────────────────────────────
 
-        private static void WriteControlTree(BinaryWriter bw, Dictionary<string, int> table, JObject node)
+        private static void WriteControlTree(BinaryWriter bw, Dictionary<string, int> table, JsonObject node)
         {
-            var properties = node["properties"] as JObject;
+            var properties = node["properties"] as JsonObject;
             if (properties != null)
             {
-                foreach (var prop in properties.Properties())
-                    WriteKeyValue(bw, table, prop.Name, prop.Value);
+                foreach (var prop in properties)
+                    WriteKeyValue(bw, table, prop.Key, prop.Value);
             }
 
-            var children = node["children"] as JArray;
+            var children = node["children"] as JsonArray;
             if (children != null && children.Count > 0)
             {
                 WriteObjectStart(bw, table, ":kids");
                 for (int i = 0; i < children.Count; i++)
                 {
-                    if (children[i] is JObject child)
+                    if (children[i] is JsonObject child)
                     {
                         WriteObjectStart(bw, table, i.ToString());
                         WriteControlTree(bw, table, child);
@@ -219,71 +222,71 @@ namespace B4XMcpServer.Engine
             }
         }
 
-        private static void WriteKeyValue(BinaryWriter bw, Dictionary<string, int> table, string key, JToken value)
+        private static void WriteKeyValue(BinaryWriter bw, Dictionary<string, int> table, string key, JsonNode? value)
         {
             WriteStringRef(bw, table, key);
             WriteTaggedValue(bw, table, value);
         }
 
-        private static void WriteTaggedValue(BinaryWriter bw, Dictionary<string, int> table, JToken value)
+        private static void WriteTaggedValue(BinaryWriter bw, Dictionary<string, int> table, JsonNode? value)
         {
-            if (value is JObject obj && obj["tag"] != null)
+            if (value is JsonObject obj && obj["tag"] != null)
             {
-                string tag = obj["tag"]?.ToString() ?? "";
+                string tag = obj["tag"]?.GetValue<string>() ?? "";
 
                 switch (tag)
                 {
                     case "Int32":
                         bw.Write(CINT);
-                        bw.Write(obj["value"]?.Value<int>() ?? 0);
+                        bw.Write(obj["value"]?.GetValue<int>() ?? 0);
                         return;
                     case "String":
                         bw.Write(CSTRING);
-                        WriteString(bw, obj["value"]?.ToString() ?? "");
+                        WriteString(bw, obj["value"]?.GetValue<string>() ?? "");
                         return;
                     case "StringRef":
                         bw.Write(CACHED_STRING);
-                        WriteStringRef(bw, table, obj["value"]?.ToString() ?? "");
+                        WriteStringRef(bw, table, obj["value"]?.GetValue<string>() ?? "");
                         return;
                     case "Float":
                         bw.Write(CFLOAT);
-                        bw.Write(obj["value"]?.Value<float>() ?? 0f);
+                        bw.Write(obj["value"]?.GetValue<float>() ?? 0f);
                         return;
                     case "Double":
                         bw.Write(CDOUBLE);
-                        bw.Write(obj["value"]?.Value<double>() ?? 0.0);
+                        bw.Write(obj["value"]?.GetValue<double>() ?? 0.0);
                         return;
                     case "Bool":
                         bw.Write(BOOL);
-                        bw.Write(obj["value"]?.Value<bool>() == true ? (byte)1 : (byte)0);
+                        bw.Write(obj["value"]?.GetValue<bool>() == true ? (byte)1 : (byte)0);
                         return;
                     case "Color":
                         bw.Write(CCOLOR);
-                        bw.Write((byte)(obj["a"]?.Value<int>() ?? 255));
-                        bw.Write((byte)(obj["r"]?.Value<int>() ?? 0));
-                        bw.Write((byte)(obj["g"]?.Value<int>() ?? 0));
-                        bw.Write((byte)(obj["b"]?.Value<int>() ?? 0));
+                        bw.Write((byte)(obj["a"]?.GetValue<int>() ?? 255));
+                        bw.Write((byte)(obj["r"]?.GetValue<int>() ?? 0));
+                        bw.Write((byte)(obj["g"]?.GetValue<int>() ?? 0));
+                        bw.Write((byte)(obj["b"]?.GetValue<int>() ?? 0));
                         return;
                     case "Int32Rect":
                         bw.Write(RECT32);
-                        bw.Write((short)(obj["x"]?.Value<int>() ?? 0));
-                        bw.Write((short)(obj["y"]?.Value<int>() ?? 0));
-                        bw.Write((short)(obj["width"]?.Value<int>() ?? 100));
-                        bw.Write((short)(obj["height"]?.Value<int>() ?? 50));
+                        bw.Write((short)(obj["x"]?.GetValue<int>() ?? 0));
+                        bw.Write((short)(obj["y"]?.GetValue<int>() ?? 0));
+                        bw.Write((short)(obj["width"]?.GetValue<int>() ?? 100));
+                        bw.Write((short)(obj["height"]?.GetValue<int>() ?? 50));
                         return;
                     case "Object":
                         bw.Write(CMAP);
-                        var nestedProps = obj["value"] as JObject;
+                        var nestedProps = obj["value"] as JsonObject;
                         if (nestedProps != null)
                         {
-                            foreach (var p in nestedProps.Properties())
-                                WriteKeyValue(bw, table, p.Name, p.Value);
+                            foreach (var p in nestedProps)
+                                WriteKeyValue(bw, table, p.Key, p.Value);
                         }
                         WriteEndMarker(bw);
                         return;
                     case "ErRef":
                         bw.Write(ERREF);
-                        bw.Write(obj["value"]?.Value<int>() ?? 0);
+                        bw.Write(obj["value"]?.GetValue<int>() ?? 0);
                         return;
                     case "Null":
                         bw.Write(CNULL);
@@ -291,40 +294,50 @@ namespace B4XMcpServer.Engine
                 }
             }
 
-            if (value is JObject nestedObj && nestedObj["tag"] == null)
+            if (value is JsonObject nestedObj && nestedObj["tag"] == null)
             {
                 bw.Write(CMAP);
-                foreach (var p in nestedObj.Properties())
-                    WriteKeyValue(bw, table, p.Name, p.Value);
+                foreach (var p in nestedObj)
+                    WriteKeyValue(bw, table, p.Key, p.Value);
                 WriteEndMarker(bw);
                 return;
             }
 
-            switch (value.Type)
+            switch (value?.GetValueKind())
             {
-                case JTokenType.Integer:
-                    bw.Write(CINT);
-                    bw.Write(value.Value<int>());
+                case JsonValueKind.Number:
+                    if (value!.AsValue().TryGetValue<int>(out int intVal))
+                    {
+                        bw.Write(CINT);
+                        bw.Write(intVal);
+                    }
+                    else if (value.AsValue().TryGetValue<float>(out float floatVal))
+                    {
+                        bw.Write(CFLOAT);
+                        bw.Write(floatVal);
+                    }
+                    else if (value.AsValue().TryGetValue<double>(out double doubleVal))
+                    {
+                        bw.Write(CDOUBLE);
+                        bw.Write(doubleVal);
+                    }
                     break;
-                case JTokenType.Float:
-                    bw.Write(CFLOAT);
-                    bw.Write(value.Value<float>());
-                    break;
-                case JTokenType.String:
+                case JsonValueKind.String:
                     bw.Write(CACHED_STRING);
-                    WriteStringRef(bw, table, value.ToString());
+                    WriteStringRef(bw, table, value.GetValue<string>() ?? "");
                     break;
-                case JTokenType.Boolean:
+                case JsonValueKind.True:
+                case JsonValueKind.False:
                     bw.Write(BOOL);
-                    bw.Write(value.Value<bool>() ? (byte)1 : (byte)0);
+                    bw.Write(value.GetValue<bool>() ? (byte)1 : (byte)0);
                     break;
-                case JTokenType.Null:
+                case JsonValueKind.Null:
                     bw.Write(CNULL);
                     break;
-                case JTokenType.Object:
+                case JsonValueKind.Object:
                     bw.Write(CMAP);
-                    foreach (var p in ((JObject)value).Properties())
-                        WriteKeyValue(bw, table, p.Name, p.Value);
+                    foreach (var p in value.AsObject())
+                        WriteKeyValue(bw, table, p.Key, p.Value);
                     WriteEndMarker(bw);
                     break;
             }
@@ -350,7 +363,7 @@ namespace B4XMcpServer.Engine
             bw.Write(table.TryGetValue(value, out int idx) ? idx : 0);
         }
 
-        private static void WriteScriptData(BinaryWriter bw, JObject? scriptData, JArray? variants)
+        private static void WriteScriptData(BinaryWriter bw, JsonObject? scriptData, JsonArray? variants)
         {
             if (scriptData == null)
             {
@@ -361,22 +374,22 @@ namespace B4XMcpServer.Engine
             using var raw = new MemoryStream();
             using var rw = new BinaryWriter(raw, Encoding.UTF8, true);
 
-            string mainScript = scriptData["mainScript"]?.ToString() ?? "";
+            string mainScript = scriptData["mainScript"]?.GetValue<string>() ?? "";
             WriteBinaryString(rw, mainScript);
 
-            var variantScripts = scriptData["variantScripts"] as JArray ?? new JArray();
+            var variantScripts = scriptData["variantScripts"] as JsonArray ?? new JsonArray();
             rw.Write(variantScripts.Count);
 
             foreach (var vs in variantScripts)
             {
-                var v = vs["variant"] as JObject;
+                var v = vs?["variant"] as JsonObject;
                 if (v != null)
                 {
-                    rw.Write(v["scale"]?.Value<float>() ?? 1f);
-                    rw.Write(v["width"]?.Value<int>() ?? 320);
-                    rw.Write(v["height"]?.Value<int>() ?? 480);
+                    rw.Write(v["scale"]?.GetValue<float>() ?? 1f);
+                    rw.Write(v["width"]?.GetValue<int>() ?? 320);
+                    rw.Write(v["height"]?.GetValue<int>() ?? 480);
                 }
-                string script = vs["script"]?.ToString() ?? "";
+                string script = vs?["script"]?.GetValue<string>() ?? "";
                 WriteBinaryString(rw, script);
             }
 
@@ -425,8 +438,11 @@ namespace B4XMcpServer.Engine
             bw.Write(index);
         }
 
-        private static void WriteString(BinaryWriter bw, string value)
+        private static void WriteString(BinaryWriter bw, string? value)
         {
+            // value is null-tolerant: callers may pass null when a property lookup
+            // yielded no string (e.g. removable tag, optional name). Treating it as "" here
+            // avoids noisy casts at every call site.
             if (value == null) value = "";
             byte[] data = Encoding.UTF8.GetBytes(value);
             bw.Write(data.Length);

@@ -9,11 +9,15 @@ x64/
 x86/
 [Ll]og/
 [Ll]ogs/
+srcb4xtools/
+Properties/PublishProfiles/
+Properties/
 
 # Publish output (dotnet publish -o ./bin/publish)
 publish/
 *.publish.xml
 *.pubxml.user
+*.pubxml
 
 # Visual Studio / Rider files
 .vs/

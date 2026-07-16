@@ -18,7 +18,7 @@ namespace B4XMcpServer.Services
             "Starter.bas", "Starter.b4a", "Starter.b4j"  // System service modules — never touch
         };
 
-        public static string FindProjectRoot(string startPath)
+        public static string? FindProjectRoot(string? startPath)
         {
             if (string.IsNullOrEmpty(startPath))
                 return null;
@@ -34,7 +34,7 @@ namespace B4XMcpServer.Services
             return null;
         }
 
-        public static List<ProjectFile> ScanProject(string projectRoot)
+        public static List<ProjectFile> ScanProject(string? projectRoot)
         {
             var files = new List<ProjectFile>();
             if (string.IsNullOrEmpty(projectRoot) || !Directory.Exists(projectRoot))
@@ -73,7 +73,7 @@ namespace B4XMcpServer.Services
             return files.OrderBy(p => p.Name).ToList();
         }
 
-        public static string FindProjectFile(string projectRoot)
+        public static string? FindProjectFile(string? projectRoot)
         {
             if (string.IsNullOrEmpty(projectRoot) || !Directory.Exists(projectRoot))
                 return null;

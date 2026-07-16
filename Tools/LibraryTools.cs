@@ -6,6 +6,7 @@ using System.IO;
 using System.Linq;
 using System.Text.Json;
 using System.Text.RegularExpressions;
+using B4XMcpServer.Engine;
 using B4XMcpServer.Services;
 using B4XMcpServer.Utils;
 
@@ -14,6 +15,9 @@ namespace B4XMcpServer.Tools
     [McpServerToolType]
     public sealed class LibraryTools
     {
+        // Regex timeout protects against catastrophic backtracking on untrusted input.
+        private static readonly TimeSpan RegexTimeout = TimeSpan.FromSeconds(2);
+
         [McpServerTool, Description("Lists all libraries referenced in a B4X project file (.b4a/.b4j/.b4i): reads the Library1, Library2... keys from the IDE metadata header. Returns the library names in order.")]
         public static string ListProjectLibraries(
             [Description("Absolute path to the B4X project folder, or to its .b4a/.b4j/.b4i project file.")] string projectPath)
@@ -40,8 +44,8 @@ namespace B4XMcpServer.Tools
             }
 
             var libraries = rawSettings
-                .Where(kv => Regex.IsMatch(kv.Key, @"^Library\d+$"))
-                .OrderBy(kv => int.Parse(Regex.Match(kv.Key, @"\d+").Value))
+                .Where(kv => Regex.IsMatch(kv.Key, @"^Library\d+$", RegexOptions.None, RegexTimeout))
+                .OrderBy(kv => int.Parse(Regex.Match(kv.Key, @"\d+", RegexOptions.None, RegexTimeout).Value))
                 .Select(kv => new { key = kv.Key, name = kv.Value })
                 .ToList();
 
@@ -50,7 +54,7 @@ namespace B4XMcpServer.Tools
                 projectFile,
                 libraryCount = libraries.Count,
                 libraries
-            }, new JsonSerializerOptions { WriteIndented = true });
+            }, JsonOptions.Default);
         }
 
         [McpServerTool, Description("Lists every available library found in all configured library folders (B4A, B4J, AdditionalLibrariesFolder from IDE settings, plus project-local Libraries/). Includes name and version.")]
@@ -75,7 +79,7 @@ namespace B4XMcpServer.Tools
                 libraryDirectories = dirs,
                 count = libs.Count,
                 libraries = libs.Select(l => new { name = l.Name, version = l.Version, source = l.Source })
-            }, new JsonSerializerOptions { WriteIndented = true });
+            }, JsonOptions.Default);
 
             CacheManager.SetByTtl(cacheKey, result, 120);
             return result;
@@ -102,7 +106,7 @@ namespace B4XMcpServer.Tools
                 {
                     error = $"Library '{libraryName}' not found in any configured library directory.",
                     searchedDirectories = dirs
-                }, new JsonSerializerOptions { WriteIndented = true });
+                }, JsonOptions.Default);
             }
 
             string cacheFile =
@@ -160,7 +164,7 @@ namespace B4XMcpServer.Tools
 
                     description = m.Description
                 })
-            }, new JsonSerializerOptions { WriteIndented = true });
+            }, JsonOptions.Default);
 
             if (string.IsNullOrEmpty(typeName))
             {
@@ -168,6 +172,97 @@ namespace B4XMcpServer.Tools
             }
 
             return result;
+        }
+
+        [McpServerTool, Description("Returns the event declarations for a given library/type. Use this to discover the exact parameter names and types an event expects before writing its handler Sub.")]
+        public static string GetLibraryEvents(
+            [Description("Library name (e.g. 'jFX')")] string libraryName,
+            [Description("Type/class name within the library (e.g. 'Panel', 'TabPane')")] string typeName,
+            [Description("Absolute path to the B4X project folder (optional, helps find project-local libraries)")] string? projectPath = null)
+        {
+            string? root = null;
+            if (!string.IsNullOrEmpty(projectPath))
+            {
+                root = Directory.Exists(projectPath) ? projectPath : ProjectScanner.FindProjectRoot(projectPath);
+            }
+
+            var dirs = B4aConfig.GetLibraryDirectories(root);
+            var library = LibraryScanner.FindLibrary(libraryName, dirs);
+
+            if (library == null)
+            {
+                return JsonSerializer.Serialize(new
+                {
+                    error = $"Library '{libraryName}' not found in any configured library directory.",
+                    searchedDirectories = dirs
+                }, JsonOptions.Default);
+            }
+
+            if (library.IsB4XLib)
+            {
+                return JsonSerializer.Serialize(new
+                {
+                    error = $"Library '{libraryName}' is a .b4xlib; event extraction from .b4xlib files is not yet supported. Use get_library_docs instead."
+                }, JsonOptions.Default);
+            }
+
+            var events = LibraryScanner.GetLibraryEvents(library.XmlPath, typeName);
+
+            return JsonSerializer.Serialize(new
+            {
+                library = libraryName,
+                type = typeName,
+                eventCount = events.Count,
+                events = events.Select(e => new
+                {
+                    name = e.Name,
+                    parameters = e.Parameters,
+                    signature = string.IsNullOrEmpty(e.Signature) ? $"{e.Name}({e.Parameters ?? ""})" : e.Signature,
+                    description = e.Description
+                })
+            }, JsonOptions.Default);
+        }
+
+        [McpServerTool, Description("Compares a single user-written Sub signature against the expected library event signature for a given library/type/event. Returns whether it matches and a list of differences.")]
+        public static string CompareWithLibrarySignature(
+            [Description("Library name (e.g. 'jFX')")] string libraryName,
+            [Description("Type/class name within the library (e.g. 'Panel')")] string typeName,
+            [Description("Event name (e.g. 'Resize')")] string eventName,
+            [Description("User-written Sub signature, e.g. 'panRoot_Resize (Width As Int, Height As Int)'")] string subSignature,
+            [Description("Absolute path to the B4X project folder (optional, helps find project-local libraries)")] string? projectPath = null)
+        {
+            string? root = null;
+            if (!string.IsNullOrEmpty(projectPath))
+            {
+                root = Directory.Exists(projectPath) ? projectPath : ProjectScanner.FindProjectRoot(projectPath);
+            }
+
+            var dirs = B4aConfig.GetLibraryDirectories(root);
+            var expected = EventHandlerValidator.GetExpectedSignature(libraryName, typeName, eventName, dirs);
+
+            if (expected == null)
+            {
+                return JsonSerializer.Serialize(new
+                {
+                    matches = false,
+                    error = $"Could not find event '{eventName}' for {libraryName}.{typeName}."
+                }, JsonOptions.Default);
+            }
+
+            var actualParams = EventHandlerValidator.ParseParameters(subSignature);
+            var differences = EventHandlerValidator.CompareSignatures(expected, actualParams, subSignature);
+
+            var expectedSig = EventHandlerValidator.FormatSignatureForDisplay(expected.EventName, expected.Parameters);
+            var actualName = subSignature.Contains("_") ? subSignature.Substring(0, subSignature.IndexOf(' ')) : subSignature;
+            var actualSig = EventHandlerValidator.FormatSignatureForDisplay(actualName, actualParams);
+
+            return JsonSerializer.Serialize(new
+            {
+                matches = differences.Count == 0,
+                expected = expectedSig,
+                actual = actualSig,
+                differences
+            }, JsonOptions.Default);
         }
 
         [McpServerTool, Description("Searches all available library documentation for methods, properties, or events matching a query string. Searches in member names, type names, and descriptions. Use this to find which library provides a specific feature, or to discover how to use a method.")]
@@ -196,13 +291,13 @@ namespace B4XMcpServer.Tools
                 query,
                 matchCount = matches.Count,
                 results = matches
-            }, new JsonSerializerOptions { WriteIndented = true });
+            }, JsonOptions.Default);
 
             CacheManager.SetByTtl(cacheKey, result, 60);
             return result;
         }
 
-        [McpServerTool, Description("Enables a library in a B4X project by adding it to the LibraryN keys in the project file header. If already enabled, does nothing. Creates .bak backup first.")]
+        [McpServerTool, Description("Enables a library in a B4X project by adding it to the LibraryN keys in the project file header. If already enabled, does nothing. Creates .bak backup first. Refuses to enable a library that isn't found in any configured library directory (B4A, B4J, AdditionalLibraries, project-local Libraries/) — so a typo can't later break compilation.")]
         public static string EnableLibrary(
         [Description("Absolute path to the .b4a/.b4j/.b4i project file, or to the project folder.")] string projectFile,
         [Description("Library name to enable (must match exactly as shown in list_project_libraries or list_available_libraries).")] string libraryName)
@@ -219,6 +314,15 @@ namespace B4XMcpServer.Tools
             if (!File.Exists(projectFile))
                 throw new FileNotFoundException($"Project file not found: {projectFile}");
 
+            // Audit-fixed check ordering: read the project header FIRST and short-circuit
+            // with "already_enabled" if the library is already in the file. Then validate
+            // the library actually exists on disk. Previously the existence check ran
+            // first, which made a no-op re-enable of an already-listed library fail with
+            // "library not found" when the library's IDE bundle wasn't installed on the
+            // local machine (e.g. B4i icore on a B4A-only dev box, or any library whose
+            // src folder isn't registered in B4aConfig). The existence validation still
+            // runs when adding a NEW library, so typos that would silently add a fake
+            // `LibraryN=jrandom` entry to the project header are still caught.
             string raw = File.ReadAllText(projectFile);
             const string marker = "@EndOfDesignText@";
             int markerIdx = raw.IndexOf(marker, StringComparison.Ordinal);
@@ -228,17 +332,47 @@ namespace B4XMcpServer.Tools
             var lines = headerSection.Split('\n').Select(l => l.TrimEnd('\r')).ToList();
 
             // Check if already enabled
-            if (lines.Any(l => Regex.IsMatch(l, @"^Library\d+=") &&
+            if (lines.Any(l => Regex.IsMatch(l, @"^Library\d+=", RegexOptions.None, RegexTimeout) &&
                 l.Split('=')[1].Trim().Equals(libraryName, StringComparison.OrdinalIgnoreCase)))
             {
                 return JsonSerializer.Serialize(new { success = true, projectFile, action = "already_enabled", library = libraryName });
             }
 
-            // Find highest LibraryN number
+            // Refuse to enable a library that doesn't actually exist in any configured directory —
+            // otherwise the project header gets a `LibraryN=jrandom` reference and the IDE/builder
+            // fails to compile with an unresolvable library name.
+            //
+            // MUST come AFTER the already-enabled early-return above: reordering to put this
+            // validation first would re-introduce the audit fix bug where a no-op re-enable
+            // throws on machines where the library isn't installed locally (e.g. B4i icore
+            // on a B4A-only dev box). If you edit the ordering, also update the related
+            // comment block above.
+            string? projectRoot = null;
+            try
+            {
+                projectRoot = ProjectScanner.FindProjectRoot(projectFile);
+            }
+            catch { /* fall back to global dirs below */ }
+            var dirs = B4aConfig.GetLibraryDirectories(projectRoot);
+            var resolved = LibraryScanner.FindLibrary(libraryName, dirs);
+            if (resolved == null)
+            {
+                throw new ArgumentException(
+                    $"Library '{libraryName}' not found in any configured library directory. " +
+                    $"Searched: {string.Join(", ", dirs)}. " +
+                    $"Run list_available_libraries to see the exact names of installed libraries.");
+            }
+
+            // Find highest LibraryN number. Regex matches any populated `LibraryN=<value>`
+            // line — NOT just empty-value placeholders. Earlier code used `^Library\d+=$`
+            // which only matched `LibraryN=` with NOTHING after the `=`, causing real
+            // projects' `Library1=core` / `Library2=XUI` entries to be missed, so maxNum
+            // stayed 0 and the newly-added `Library1=<newName>` would overwrite the
+            // existing `Library1=core`. (Audit fix — broad `=` matches populated entries.)
             int maxNum = 0;
             foreach (var line in lines)
             {
-                var m = Regex.Match(line, @"^Library(\d+)=");
+                var m = Regex.Match(line, @"^Library(\d+)=", RegexOptions.None, RegexTimeout);
                 if (m.Success && int.TryParse(m.Groups[1].Value, out int num))
                     maxNum = Math.Max(maxNum, num);
             }
@@ -249,7 +383,7 @@ namespace B4XMcpServer.Tools
             // Update NumberOfLibraries if present
             for (int i = 0; i < lines.Count; i++)
             {
-                if (Regex.IsMatch(lines[i], @"^NumberOfLibraries=", RegexOptions.IgnoreCase))
+                if (Regex.IsMatch(lines[i], @"^NumberOfLibraries=", RegexOptions.IgnoreCase, RegexTimeout))
                 {
                     lines[i] = $"NumberOfLibraries={newNum}";
                     break;
@@ -305,7 +439,7 @@ namespace B4XMcpServer.Tools
             bool removed = false;
             foreach (var line in lines)
             {
-                if (Regex.IsMatch(line, @"^Library\d+=") &&
+                if (Regex.IsMatch(line, @"^Library\d+=", RegexOptions.None, RegexTimeout) &&
                     line.Split('=')[1].Trim().Equals(libraryName, StringComparison.OrdinalIgnoreCase))
                 {
                     removed = true;
@@ -319,12 +453,18 @@ namespace B4XMcpServer.Tools
                 return JsonSerializer.Serialize(new { success = true, projectFile, action = "not_found", library = libraryName });
             }
 
-            // Renumber
+            // Renumber remaining LibraryN entries sequentially from 1 so there are no gaps.
+            // Regex matches any populated `LibraryN=<value>` line — NOT just empty-value
+            // placeholders. Earlier code used `^Library\d+=$` which only matched
+            // `LibraryN=` with NOTHING after the `=`, so real entries like
+            // `Library1=core` were never renumbered, leaving gaps and producing a
+            // broken `NumberOfLibraries=0` (since `idx` never incremented past 1).
+            // (Audit fix — broad `=` matches populated entries.)
             var renumbered = new List<string>();
             int idx = 1;
             foreach (var line in remaining)
             {
-                if (Regex.IsMatch(line, @"^Library\d+="))
+                if (Regex.IsMatch(line, @"^Library\d+=", RegexOptions.None, RegexTimeout))
                 {
                     var value = line.Split('=')[1].Trim();
                     renumbered.Add($"Library{idx}={value}");
@@ -339,7 +479,7 @@ namespace B4XMcpServer.Tools
             // Update NumberOfLibraries
             for (int i = 0; i < renumbered.Count; i++)
             {
-                if (Regex.IsMatch(renumbered[i], @"^NumberOfLibraries=", RegexOptions.IgnoreCase))
+                if (Regex.IsMatch(renumbered[i], @"^NumberOfLibraries=", RegexOptions.IgnoreCase, RegexTimeout))
                 {
                     renumbered[i] = $"NumberOfLibraries={idx - 1}";
                     break;

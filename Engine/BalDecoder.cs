@@ -4,6 +4,7 @@ using System.IO;
 using System.IO.Compression;
 using System.Text;
 using System.Text.Json;
+using B4XMcpServer.Utils;
 
 namespace B4XMcpServer.Engine
 {
@@ -25,7 +26,7 @@ namespace B4XMcpServer.Engine
         public static string Decode(byte[] data)
         {
             var result = DecodeToObject(data);
-            return JsonSerializer.Serialize(result, new JsonSerializerOptions { WriteIndented = true });
+            return JsonSerializer.Serialize(result, JsonOptions.Default);
         }
 
         public static Dictionary<string, object> DecodeToObject(byte[] data)
@@ -195,8 +196,13 @@ namespace B4XMcpServer.Engine
 
         private static string ReadCachedString(BinaryReader br, List<string> cache)
         {
-            if (cache.Count == 0)
-                return ReadString(br);
+            // The encoder ALWAYS writes a 4-byte int32 cache index via WriteStringRef,
+            // even when the cache is empty (it writes 0 for unknown strings). The old
+            // `if (cache.Count == 0) return ReadString(br);` branch would then read
+            // that int32 as a UTF-8 string length and consume that many bytes as
+            // payload, desynchronizing the stream. Always read as an int32 index so
+            // the stream stays aligned; out-of-range indices return a sentinel so the
+            // caller can still detect the issue without garbage data downstream.
             int index = br.ReadInt32();
             if (index < 0 || index >= cache.Count)
                 return $"[Cache {index}]";

@@ -2,6 +2,7 @@
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.Text.Json;
+using B4XMcpServer.Utils;
 
 namespace B4XMcpServer.Tools
 {
@@ -19,7 +20,7 @@ namespace B4XMcpServer.Tools
                     severity = "CRITICAL",
                     description = "Every .b4a/.b4j file has a PROJECT METADATA section (NumberOfModules, Module1=Starter, Library1=core, ManifestCode=, Build1=, etc.) and a SOURCE CODE section (Subs, Types, #Region blocks). Never put code in the metadata section, never put metadata in the code section.",
                     example = "DON'T put AddManifestText in the code. DON'T put Subs or #Region Project Attributes in the metadata section. DO keep them strictly separated.",
-                    fix = "Project metadata (Library1=, Module1=, ManifestCode=) stays in its section — use enable_library/disable_library to modify libraries. #Region Project Attributes and #Region Activity Attributes stay at the top of the source code section. #Region Manifest Editor stays in the metadata section."
+                    fix = "Project metadata (Library1=, Module1=, ManifestCode=) stays in its section — use enable_library/disable_library to modify libraries. #Region Project Attributes and #Region Activity Attributes stay at the top of the source code section. #Region Manifest Editor stays in the metadata section. write_file is BLOCKED for existing .b4a/.b4j/.b4i files to prevent corruption."
                 },
                 new
                 {
@@ -171,7 +172,7 @@ namespace B4XMcpServer.Tools
             {
                 count = gotchas.Length,
                 gotchas
-            }, new JsonSerializerOptions { WriteIndented = true });
+            }, JsonOptions.Default);
         }
 
         [McpServerTool, Description("Returns the exact signatures for B4X core API: List, Map, Timer, String, Intent, Activity, DateTime, Bit, Regex, Matcher. Use this to verify method names, parameter types, and return types before writing code. Never guess a method signature — check it here first.")]
@@ -249,7 +250,7 @@ namespace B4XMcpServer.Tools
                 {
                     type = typeName,
                     signatures = api[typeName]
-                }, new JsonSerializerOptions { WriteIndented = true });
+                }, JsonOptions.Default);
             }
 
             return JsonSerializer.Serialize(new
@@ -257,7 +258,7 @@ namespace B4XMcpServer.Tools
                 availableTypes = api.Keys.ToArray(),
                 hint = "Pass typeName to get signatures for a specific type. E.g. get_core_api(typeName='List')",
                 api
-            }, new JsonSerializerOptions { WriteIndented = true });
+            }, JsonOptions.Default);
         }
     }
 }

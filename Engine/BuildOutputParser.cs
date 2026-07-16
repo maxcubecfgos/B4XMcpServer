@@ -6,30 +6,37 @@ namespace B4XMcpServer.Engine
 {
     public static class BuildOutputParser
     {
-        private static readonly Regex VERSION_RE = new Regex("(?i)^(?:Version\\s+)?(B4A|B4J|B4i)(?:\\s+Version)?:\\s*([\\d.]+)", RegexOptions.Compiled);
-        private static readonly Regex JAVA_VERSION_RE = new Regex("(?i)^Java Version:\\s*([\\d.]+)", RegexOptions.Compiled);
-        private static readonly Regex ERROR_LINE_RE = new Regex("(?i)^Error\\s*(B4A|B4J|B4i)?\\s*line:\\s*(\\d+)\\s*$", RegexOptions.Compiled);
-        private static readonly Regex ERROR_DESC_RE = new Regex("(?i)^Error description:\\s*(.+)$", RegexOptions.Compiled);
-        private static readonly Regex ERROR_OCCURRED_RE = new Regex("(?i)^Error occurred on line:\\s*(\\d+)\\s*$", RegexOptions.Compiled);
-        private static readonly Regex WORD_RE = new Regex("(?i)^Word:\\s*(.+)$", RegexOptions.Compiled);
+        // Regex timeout protects against catastrophic backtracking when parsing
+        // untrusted or unexpectedly long builder output lines.
+        private static readonly TimeSpan RegexTimeout = TimeSpan.FromSeconds(2);
+
+        private static readonly Regex VERSION_RE = new Regex("(?i)^(?:Version\\s+)?(B4A|B4J|B4i)(?:\\s+Version)?:\\s*([\\d.]+)", RegexOptions.Compiled, RegexTimeout);
+        private static readonly Regex JAVA_VERSION_RE = new Regex("(?i)^Java Version:\\s*([\\d.]+)", RegexOptions.Compiled, RegexTimeout);
+        private static readonly Regex ERROR_LINE_RE = new Regex("(?i)^Error\\s*(B4A|B4J|B4i)?\\s*line:\\s*(\\d+)\\s*$", RegexOptions.Compiled, RegexTimeout);
+        private static readonly Regex ERROR_DESC_RE = new Regex("(?i)^Error description:\\s*(.+)$", RegexOptions.Compiled, RegexTimeout);
+        private static readonly Regex ERROR_OCCURRED_RE = new Regex("(?i)^Error occurred on line:\\s*(\\d+)\\s*$", RegexOptions.Compiled, RegexTimeout);
+        private static readonly Regex WORD_RE = new Regex("(?i)^Word:\\s*(.+)$", RegexOptions.Compiled, RegexTimeout);
         // Javac error pattern: file.java:line: error: message
-        private static readonly Regex JAVAC_ERROR_RE = new Regex(@"^(.*?\.java):(\d+):\s*error:\s*(.+)$", RegexOptions.Compiled);
+        private static readonly Regex JAVAC_ERROR_RE = new Regex(@"^(.*?\.java):(\d+):\s*error:\s*(.+)$", RegexOptions.Compiled, RegexTimeout);
 
         // Note: The JAVAC_ERROR_RE above is a common-case pattern; keep a fallback as well
-        private static readonly Regex JAVAC_ERROR_RE_FALLBACK = new Regex("^(.*?\\.java):(\\d+):\\s*error:\\s*(.+)$", RegexOptions.Compiled);
-        private static readonly Regex SYMBOL_RE = new Regex("(?i)^symbol:\\s*(.+)$", RegexOptions.Compiled);
-        private static readonly Regex LOCATION_RE = new Regex("(?i)^location:\\s*(.+)$", RegexOptions.Compiled);
+        private static readonly Regex JAVAC_ERROR_RE_FALLBACK = new Regex("^(.*?\\.java):(\\d+):\\s*error:\\s*(.+)$", RegexOptions.Compiled, RegexTimeout);
+        private static readonly Regex SYMBOL_RE = new Regex("(?i)^symbol:\\s*(.+)$", RegexOptions.Compiled, RegexTimeout);
+        private static readonly Regex LOCATION_RE = new Regex("(?i)^location:\\s*(.+)$", RegexOptions.Compiled, RegexTimeout);
 
-        public static Dictionary<string, object> Parse(string output)
+        // Every parsed result value is nullable: builder output keys like java_line,
+        // symbol, location, and module are frequently absent, and modeling that exactly
+        // is safer than forcing callers to remember which fields may be missing.
+        public static Dictionary<string, object?> Parse(string output)
         {
             var lines = (output ?? string.Empty).Replace("\r\n", "\n").Split('\n');
-            var result = new Dictionary<string, object>
+            var result = new Dictionary<string, object?>
             {
                 { "platform", null },
                 { "version", null },
                 { "java_version", null },
-                { "phases", new List<Dictionary<string, object>>() },
-                { "errors", new List<Dictionary<string, object>>() },
+                { "phases", new List<Dictionary<string, object?>>() },
+                { "errors", new List<Dictionary<string, object?>>() },
                 { "success", true }
             };
 
@@ -56,7 +63,7 @@ namespace B4XMcpServer.Engine
                 if (line.StartsWith("Error", StringComparison.OrdinalIgnoreCase))
                 {
                     // Use TryGetValue to avoid KeyNotFoundException if 'platform' is missing
-                    string platformStr = null;
+                    string? platformStr = null;
                     if (result.TryGetValue("platform", out var pObj) && pObj != null) platformStr = pObj.ToString();
 
                     var tuple = ParseErrorBlock(lines, i, platformStr);
@@ -64,14 +71,14 @@ namespace B4XMcpServer.Engine
                     i = tuple.Item2;
 
                     // Add to errors list defensively
-                    if (result.TryGetValue("errors", out var errsObj) && errsObj is List<Dictionary<string, object>> errsList)
+                    if (result.TryGetValue("errors", out var errsObj) && errsObj is List<Dictionary<string, object?>> errsList)
                     {
                         errsList.Add(err);
                     }
                     else
                     {
                         // If the errors list isn't present for some reason, create one
-                        result["errors"] = new List<Dictionary<string, object>> { err };
+                        result["errors"] = new List<Dictionary<string, object?>> { err };
                     }
 
                     result["success"] = false;
@@ -85,12 +92,12 @@ namespace B4XMcpServer.Engine
             return result;
         }
 
-        private static Tuple<Dictionary<string, object>, int> ParseErrorBlock(string[] lines, int start, string platform)
+        private static Tuple<Dictionary<string, object?>, int> ParseErrorBlock(string[] lines, int start, string? platform)
         {
             int i = start;
             string firstLine = lines[i].Trim();
             i++;
-            var error = new Dictionary<string, object>
+            var error = new Dictionary<string, object?>
             {
                 { "kind", "unknown" }, { "platform", platform }, { "module", null }, { "b4x_line", null },
                 { "source_line", null }, { "message", "" }, { "java_file", null }, { "java_line", null },
@@ -127,7 +134,7 @@ namespace B4XMcpServer.Engine
                             if (sm.Success) { error["symbol"] = sm.Groups[1].Value.Trim(); i++; continue; }
                             var lm = LOCATION_RE.Match(l);
                             if (lm.Success) { error["location"] = lm.Groups[1].Value.Trim(); i++; continue; }
-                            if (Regex.IsMatch(l, "^\\d+\\s+errors?$", RegexOptions.IgnoreCase) || Regex.IsMatch(l, "(?i)^only showing the first")) { i++; break; }
+                            if (Regex.IsMatch(l, "^\\d+\\s+errors?$", RegexOptions.IgnoreCase, RegexTimeout) || Regex.IsMatch(l, "^only showing the first", RegexOptions.IgnoreCase, RegexTimeout)) { i++; break; }
                             i++;
                         }
                     }
@@ -141,19 +148,24 @@ namespace B4XMcpServer.Engine
             else
             {
                 error["kind"] = "syntax";
+                // Track the current message text in a typed String local so we don't have to
+                // cast through the dictionary value (object?). Each branch below either
+                // replaces or appends to the local, and we sync it to error["message"] on exit.
+                string message = "";
                 while (i < lines.Length)
                 {
                     var l = lines[i].Trim();
                     var dm = ERROR_DESC_RE.Match(l);
-                    if (dm.Success) { error["message"] = dm.Groups[1].Value.Trim(); i++; continue; }
+                    if (dm.Success) { message = dm.Groups[1].Value.Trim(); i++; continue; }
                     var lm = ERROR_OCCURRED_RE.Match(l);
                     if (lm.Success) { error["b4x_line"] = int.Parse(lm.Groups[1].Value); i++; continue; }
                     var wm = WORD_RE.Match(l);
-                    if (wm.Success) { error["message"] = ((string)error["message"]) + $" (token: {wm.Groups[1].Value.Trim()})"; i++; continue; }
+                    if (wm.Success) { message += $" (token: {wm.Groups[1].Value.Trim()})"; i++; continue; }
                     if (string.IsNullOrEmpty(l)) { i++; break; }
                     if (error["source_line"] == null) error["source_line"] = l;
                     i++;
                 }
+                error["message"] = message;
             }
 
             error["raw"] = string.Join("\n", SubArray(lines, start, i - start));
@@ -171,8 +183,8 @@ namespace B4XMcpServer.Engine
         {
             var parts = javaPath.Split(new[] { '\\', '/' }, StringSplitOptions.RemoveEmptyEntries);
             var baseName = parts[^1];
-            var withoutExt = Regex.Replace(baseName, "(?i)\\.java$", "");
-            return Regex.Replace(withoutExt, "(?i)_subs_\\d+$", "");
+            var withoutExt = Regex.Replace(baseName, "(?i)\\.java$", "", RegexOptions.None, RegexTimeout);
+            return Regex.Replace(withoutExt, "(?i)_subs_\\d+$", "", RegexOptions.None, RegexTimeout);
         }
     }
 }

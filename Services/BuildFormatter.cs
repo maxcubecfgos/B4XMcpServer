@@ -6,7 +6,7 @@ namespace B4XMcpServer.Services
 {
     public static class BuildFormatter
     {
-        public static string Format(Dictionary<string, object> buildResult)
+        public static string Format(Dictionary<string, object?> buildResult)
         {
             if (buildResult == null) return string.Empty;
             bool success = buildResult.ContainsKey("success") && buildResult["success"] is bool b && b;
@@ -21,7 +21,10 @@ namespace B4XMcpServer.Services
             {
                 foreach (var o in errs)
                 {
-                    if (o is Dictionary<string, object> e)
+                    // The errors list contains Dictionary<string, object?> per BuildOutputParser;
+                    // the unconditional narration below is safe because each TryGetValue guards
+                    // against null values before calling .ToString() or string interpolation.
+                    if (o is Dictionary<string, object?> e)
                     {
                         var mod = e.TryGetValue("module", out var mval) && mval != null ? mval.ToString() : "(unknown module)";
                         var lineInfo = e.TryGetValue("b4x_line", out var lval) && lval != null ? $"line {lval}" : "";

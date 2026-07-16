@@ -1,17 +1,19 @@
 using System;
 using System.Collections.Generic;
-using System.Diagnostics;
 using System.IO;
-using System.Text;
+using System.Threading.Tasks;
 using B4XMcpServer.Engine;
 
 namespace B4XMcpServer.Services
 {
     public static class BuilderRunner
     {
-        public static Dictionary<string, object> RunBuild(string builderPath, string projectFile, int timeoutSeconds = 300)
+        // Match BuildOutputParser.Parse's nullability contract: every parsed result value
+        // is nullable because builder output keys like `java_line` and `symbol` are
+        // frequently absent. BuildFormatter.Format was updated to accept this shape.
+        public static async Task<Dictionary<string, object?>> RunBuildAsync(string builderPath, string projectFile, int timeoutSeconds = 300)
         {
-            var result = new Dictionary<string, object> { { "success", false }, { "errors", new List<Dictionary<string, object>>() } };
+            var result = new Dictionary<string, object?> { { "success", false }, { "errors", new List<Dictionary<string, object?>>() } };
 
             if (string.IsNullOrEmpty(builderPath) || !File.Exists(builderPath))
             {
@@ -19,49 +21,28 @@ namespace B4XMcpServer.Services
                 return result;
             }
 
-            var startInfo = new ProcessStartInfo
+            var workingDirectory = Path.GetDirectoryName(projectFile);
+            var arguments = new List<string>
             {
-                FileName = builderPath,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                UseShellExecute = false,
-                CreateNoWindow = true,
-                WorkingDirectory = Path.GetDirectoryName(projectFile)
+                "-Task=build",
+                $"-Project={projectFile}"
             };
-            // ArgumentList lets .NET handle quoting/escaping per-argument correctly,
-            // instead of manually interpolating quotes into a single Arguments string
-            // (which breaks, or worse, allows argument injection, if projectFile contains a `"`).
-            startInfo.ArgumentList.Add("-Task=build");
-            startInfo.ArgumentList.Add($"-Project={projectFile}");
 
             try
             {
-                using var proc = Process.Start(startInfo);
-                if (proc == null)
-                {
-                    result["fatal_error"] = "Failed to start builder process.";
-                    return result;
-                }
+                var runResult = await ProcessRunner.RunAsync(builderPath, arguments, workingDirectory, timeoutSeconds * 1000);
+                string rawOut = runResult.Output;
 
-                var output = new StringBuilder();
-                proc.OutputDataReceived += (s, e) => { if (e.Data != null) output.AppendLine(e.Data); };
-                proc.ErrorDataReceived += (s, e) => { if (e.Data != null) output.AppendLine(e.Data); };
-                proc.BeginOutputReadLine();
-                proc.BeginErrorReadLine();
-
-                if (!proc.WaitForExit(timeoutSeconds * 1000))
+                // Si el builder no produjo nada, es un error fatal del sistema
+                if (runResult.TimedOut)
                 {
-                    try { proc.Kill(); } catch { }
                     result["fatal_error"] = $"Build timed out after {timeoutSeconds}s.";
                     return result;
                 }
 
-                string rawOut = output.ToString();
-
-                // Si el builder no produjo nada, es un error fatal del sistema
-                if (rawOut.Trim().Length == 0 && proc.ExitCode != 0)
+                if (rawOut.Trim().Length == 0 && runResult.ExitCode != 0)
                 {
-                    result["fatal_error"] = $"Builder exited with code {proc.ExitCode} and produced no output.";
+                    result["fatal_error"] = $"Builder exited with code {runResult.ExitCode} and produced no output.";
                     return result;
                 }
 

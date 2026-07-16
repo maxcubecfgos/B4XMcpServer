@@ -14,12 +14,12 @@ namespace B4XMcpServer.Services
             @"C:\Program Files\Anywhere Software\B4J\B4JBuilder.exe",
         };
 
-        public static string LocateBuilder(string projectPathOrRoot)
+        public static string? LocateBuilder(string? projectPathOrRoot)
         {
             // Determine project directory and extension (if a project file was passed)
             string projectDir = projectPathOrRoot ?? ".";
-            string projFile = null;
-            string ext = null;
+            string? projFile = null;
+            string? ext = null;
             try
             {
                 if (File.Exists(projectPathOrRoot))
@@ -43,7 +43,7 @@ namespace B4XMcpServer.Services
             catch { }
 
             // Map extension to expected builder executable
-            string expectedBuilderName = null;
+            string? expectedBuilderName = null;
             if (!string.IsNullOrEmpty(ext))
             {
                 switch (ext)
@@ -54,7 +54,6 @@ namespace B4XMcpServer.Services
                 }
             }
 
-            // Check config override (must match expected builder if we know the project type)
             // Check config override (must match expected builder if we know the project type)
             try
             {

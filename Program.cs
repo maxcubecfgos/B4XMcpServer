@@ -22,6 +22,8 @@ builder.Services
     .WithTools<LayoutTools>()
     .WithTools<DeviceTools>()
     .WithTools<GitTools>()
-    .WithTools<LibraryTools>();
+    .WithTools<LibraryTools>()
+    .WithTools<WorkflowTools>()
+    .WithTools<RuntimeTools>();
 
 await builder.Build().RunAsync();

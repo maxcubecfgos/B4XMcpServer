@@ -71,21 +71,25 @@ namespace B4XMcpServer.Services
 
     public static class LibraryScanner
     {
+        // Regex timeout protects against catastrophic backtracking on malformed
+        // source files passed to the library scanner.
+        private static readonly TimeSpan RegexTimeout = TimeSpan.FromSeconds(2);
+
         private static readonly Regex PublicSubRegex =
     new(@"(?im)^\s*(Public\s+)?Sub\s+([A-Za-z_]\w*)\s*\((.*?)\)",
-        RegexOptions.Compiled);
+        RegexOptions.Compiled, RegexTimeout);
 
         private static readonly Regex TypeRegex =
             new(@"(?im)^\s*Type\s+([A-Za-z_]\w*)",
-                RegexOptions.Compiled);
+                RegexOptions.Compiled, RegexTimeout);
 
         private static readonly Regex EnumRegex =
             new(@"(?im)^\s*Enum\s+([A-Za-z_]\w*)",
-                RegexOptions.Compiled);
+                RegexOptions.Compiled, RegexTimeout);
 
         private static readonly Regex PublicFieldRegex =
             new(@"(?im)^\s*Public\s+([A-Za-z_]\w*)",
-                RegexOptions.Compiled);
+                RegexOptions.Compiled, RegexTimeout);
         /// <summary>
         /// Lists all available libraries (.jar + .xml pairs) from the given directories.
         /// </summary>
@@ -264,6 +268,15 @@ namespace B4XMcpServer.Services
                     Signature = m.Value.Trim()
                 });
             }
+        }
+
+        /// <summary>
+        /// Returns only the event declarations for a specific type in a library XML.
+        /// </summary>
+        public static List<LibraryMember> GetLibraryEvents(string xmlPath, string typeName)
+        {
+            var docs = GetLibraryDocs(xmlPath, typeName);
+            return docs.Members.Where(m => m.Kind == "event").ToList();
         }
 
         /// <summary>

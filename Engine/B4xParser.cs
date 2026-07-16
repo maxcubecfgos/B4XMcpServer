@@ -8,10 +8,12 @@ namespace B4XMcpServer.Engine
     {
         public class B4XNode
         {
-            public string Kind { get; set; }
-            public string Name { get; set; }
-            public string Params { get; set; }
-            public string ReturnType { get; set; }
+            public string Kind { get; set; } = null!;
+            public string Name { get; set; } = null!;
+            // Params/ReturnType legitimately may be absent when the Sub declaration has no
+            // parameter list or no "As ReturnType" clause — the parser leaves them null.
+            public string? Params { get; set; }
+            public string? ReturnType { get; set; }
             public int StartLine { get; set; }
             public int? EndLine { get; set; }
             public bool IsPrivate { get; set; }
@@ -21,9 +23,9 @@ namespace B4XMcpServer.Engine
 
         public class ParseIssue
         {
-            public string Message { get; set; }
+            public string Message { get; set; } = null!;
             public int Line { get; set; }
-            public string Severity { get; set; }
+            public string Severity { get; set; } = null!;
         }
 
         private static string NormalizeKw(string s)
@@ -71,7 +73,7 @@ namespace B4XMcpServer.Engine
             return lines;
         }
 
-        private static void CloseBlock(string closerName, int line, List<(string closer, B4XNode node, int openedAt)> stack, List<B4XNode> containerStack, List<ParseIssue> issues)
+        private static void CloseBlock(string closerName, int line, List<(string closer, B4XNode? node, int openedAt)> stack, List<B4XNode> containerStack, List<ParseIssue> issues)
         {
             if (!stack.Any()) { issues.Add(new ParseIssue { Message = $"Unexpected \"{closerName}\": no open block to close.", Line = line, Severity = "error" }); return; }
             var top = stack.Last();
@@ -88,9 +90,9 @@ namespace B4XMcpServer.Engine
             }
         }
 
-        private static (string paramsText, string returnType) ExtractParamsAndReturn(List<B4xLexer.Token> tokens)
+        private static (string? paramsText, string? returnType) ExtractParamsAndReturn(List<B4xLexer.Token> tokens)
         {
-            string parameters = null; string returnType = null;
+            string? parameters = null; string? returnType = null;
             int i = 0;
             if (i < tokens.Count && tokens[i].Value == "(")
             {
@@ -121,7 +123,10 @@ namespace B4XMcpServer.Engine
 
             var issues = new List<ParseIssue>();
             var root = new B4XNode { Kind = "Module", Name = "", StartLine = 1 };
-            var stack = new List<(string closer, B4XNode node, int openedAt)>();
+            // Stack entries are `(closer, node, line)` where `node` is nullable:
+            // control-flow opens like `If`/`For` push a null B4XNode, while Sub/Region
+            // pushes a real node. CloseBlock takes the same nullable tuple shape.
+            var stack = new List<(string closer, B4XNode? node, int openedAt)>();
             var containerStack = new List<B4XNode> { root };
             string pendingComment = "";
 
@@ -220,7 +225,7 @@ namespace B4XMcpServer.Engine
                         if (hasCodeAfterThen) { pendingComment = ""; continue; }
                     }
                     var closer = stmt_kw == "If" ? "End If" : stmt_kw == "Select" ? "End Select" : stmt_kw == "Do" ? "Loop" : stmt_kw == "For" ? "Next" : "End Try";
-                    stack.Add((closer, null, first.Line));
+                    stack.Add((closer, (B4XNode?)null, first.Line));
                     pendingComment = "";
                     continue;
                 }
@@ -253,7 +258,7 @@ namespace B4XMcpServer.Engine
             return result;
         }
 
-        public static string FindEnclosingSub(string source, int line)
+        public static string? FindEnclosingSub(string source, int line)
         {
             try
             {

@@ -18,17 +18,19 @@ namespace B4XMcpServer.Engine
         {
             public int StartLine { get; set; }
             public int? EndLine { get; set; }
-            public string Kind { get; set; }
-            public string Name { get; set; }
-            public string LeadingComment { get; set; }
+            public string Kind { get; set; } = null!;
+            public string Name { get; set; } = null!;
+            public string LeadingComment { get; set; } = null!;
         }
 
-        public static string GenerateModuleSkeleton(string source, IEnumerable<Node> nodes, IEnumerable<string> keepFullNames = null)
+        public static string GenerateModuleSkeleton(string? source, IEnumerable<Node>? nodes, IEnumerable<string>? keepFullNames = null)
         {
+            // source/nodes are nullable because callers may pass null to request "no
+            // transformation" of an empty input — the function returns source verbatim.
             var keepSet = new HashSet<string>((keepFullNames ?? Enumerable.Empty<string>()).Select(n => n.ToLowerInvariant()));
             var lines = source?.Split(new[] { "\n" }, StringSplitOptions.None) ?? new string[0];
             if (nodes == null || !nodes.Any())
-                return source;
+                return source ?? string.Empty;
 
             var outLines = new List<string>();
             int lastEmittedLine = 0;
