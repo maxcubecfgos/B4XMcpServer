@@ -1021,8 +1021,13 @@ namespace B4XMcpServer.Tools
             [Description(".NET regular expression to search for, matched against each line of every .bas file (case-insensitive).")]
             public string Pattern { get; set; } = string.Empty;
 
-            [Description("Optional: also search inside the .b4a/.b4j project file's code section, not just .bas modules. Default false.")]
-            public bool IncludeProjectFile { get; set; } = false;
+            // User-feedback (AI external): the natural mental model is "search_code searches
+            // the whole project", which by definition includes the .b4a/.b4j project's source
+            // code section, not just the .bas modules. AI callers kept omitting this flag and
+            // hitting 0 matches on code that lived inside the project file. Default true so the
+            // common path Just Works; callers can still opt out with IncludeProjectFile=false.
+            [Description("Also search inside the .b4a/.b4j/.b4i project file's code section in addition to .bas modules. Default true — the natural mental model of \"search the project\" includes the project file. Set to false to restrict the search to .bas modules only.")]
+            public bool IncludeProjectFile { get; set; } = true;
 
             [Description("Maximum number of matches to return, to avoid flooding context on overly broad patterns. Default 200.")]
             public int MaxResults { get; set; } = 200;
