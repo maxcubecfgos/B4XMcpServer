@@ -138,11 +138,20 @@ namespace B4XMcpServer.Tools
                 {
                     module = string.IsNullOrWhiteSpace(m.Module)
         ? null
-        : m.Module,
+        : m.Module,                kind = m.Kind,
 
-                    kind = m.Kind,
+                // Round-3 polish: expose name + returnType + parameters as dedicated
+                // JSON fields so consumers can match by name rather than parsing the
+                // synthetic signature. The (missing from XML doc) placeholder from
+                // round 2 flows through both `name` and `signature` consistently when
+                // the source XML doc omitted the `name=` attribute.
+                name = m.Name,
 
-                    signature =
+                returnType = m.ReturnType,
+
+                parameters = m.Parameters,
+
+                signature =
         !string.IsNullOrEmpty(m.Signature)
             ? m.Signature
             : m.Kind switch
