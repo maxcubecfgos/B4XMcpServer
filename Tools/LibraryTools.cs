@@ -311,14 +311,11 @@ namespace B4XMcpServer.Tools
         [Description("Absolute path to the .b4a/.b4j/.b4i project file, or to the project folder.")] string projectFile,
         [Description("Library name to enable (must match exactly as shown in list_project_libraries or list_available_libraries).")] string libraryName)
         {
-            // User-feedback (AI external): without this guard a relative path (e.g. "."
-            // or "MyApp") fell through to the Directory.Exists/Filesystem checks and
-            // produced a confusing FileNotFoundException from the .bak copy or the
-            // File.WriteAllText later, with no hint that the actual problem was a
-            // non-absolute path. Reject up-front so the caller gets a clear,
-            // immediately-actionable error instead of a stack trace.
-            PathSecurity.ValidateAbsolutePath(projectFile, nameof(projectFile));
-
+            // User-feedback (AI external, round 3): trading the round-1 absolute-path guard for
+            // path-policy consistency with get_project_structure (which already accepts ".").
+            // The Directory.Exists branch below resolves relative paths to a real project file
+            // before any destructive I/O runs, so the round-1 safety net is replaced by an
+            // equally strong post-resolution guard.
             // If a directory was passed, find the project file
             if (Directory.Exists(projectFile))
             {
@@ -432,15 +429,11 @@ namespace B4XMcpServer.Tools
             [Description("Absolute path to the .b4a/.b4j/.b4i project file, or to the project folder.")] string projectFile,
             [Description("Library name to disable (exact name as shown in list_project_libraries).")] string libraryName)
         {
-            // User-feedback (AI external, round 2): see EnableLibrary for the same
-            // rationale — keep both library-modifying tools' path validation symmetric
-            // so the failure mode is identical and predictable. Without this guard a
-            // relative path (e.g. ".", "./MyApp.b4j", "MyApp") would later surface as
-            // a confusing FileNotFoundException from File.Copy(.bak) or
-            // File.WriteAllText(projectFile), with no hint that the actual problem was
-            // a non-absolute path. Reject up-front so the caller gets a clean error.
-            PathSecurity.ValidateAbsolutePath(projectFile, nameof(projectFile));
-
+            // User-feedback (AI external, round 3): trading the round-1 absolute-path guard for
+            // path-policy consistency with get_project_structure (which already accepts ".").
+            // See EnableLibrary for the same rationale; symmetric removal across both
+            // library-modifying tools. The Directory.Exists branch resolves relative paths
+            // before any destructive I/O runs.
             // If a directory was passed, find the project file
             if (Directory.Exists(projectFile))
             {
