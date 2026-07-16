@@ -46,14 +46,21 @@ namespace B4XMcpServer.Tools
             bool hasMainBas = files.Any(f => f.Name.Equals("Main.bas", StringComparison.OrdinalIgnoreCase));
 
             bool isB4A = projectFile != null && string.Equals(Path.GetExtension(projectFile), ".b4a", StringComparison.OrdinalIgnoreCase);
+            string? mainModuleName = projectFile != null ? Path.GetFileName(projectFile) : "the .b4a/.b4j/.b4i file";
+            string entryPointHint = isB4A ? "Activity_Create, Process_Globals, etc." : "AppStart, Process_Globals, etc.";
 
-            // Warning 1: Where does the main code live?
-            if (!hasMainBas)
+            // Warning 1: The project file IS the Main module — always, regardless of its name.
+            if (hasMainBas)
             {
-                string? mainModule = projectFile != null ? Path.GetFileName(projectFile) : "the .b4a/.b4j file";
-                string entryPointHint = isB4A ? "Activity_Create, etc." : "AppStart, etc.";
-                warnings.Add($"⚠️ CRITICAL: This project does NOT have a Main.bas file. The main {(isB4A ? "activity" : "module")} code lives inside '{mainModule}'. " +
-                              $"DO NOT create Main.bas. DO NOT look for Main.bas. All Subs (Process_Globals, Globals, {entryPointHint}) go in the project file itself.");
+                warnings.Add($"🛑 CRITICAL CORRUPTION: A 'Main.bas' file exists in the project root, but it is NOT the main module. " +
+                              $"The REAL main module is '{mainModuleName}'. In B4X the .b4a/.b4j/.b4i file at the project root IS the Main module — REGARDLESS of its name. " +
+                              $"DO NOT read, edit, or interact with 'Main.bas'. Ask the user to delete it, or ignore it completely. " +
+                              $"All main Subs ({entryPointHint}) go in the source code section of '{mainModuleName}'.");
+            }
+            else
+            {
+                warnings.Add($"ℹ️ MAIN MODULE: The main module is '{mainModuleName}'. All main Subs ({entryPointHint}) live in its source code section. " +
+                              $"DO NOT create or look for a 'Main.bas' file — it does not exist and must not be created.");
             }
 
             // Warning 2: File structure
@@ -85,12 +92,32 @@ namespace B4XMcpServer.Tools
                 : "ℹ️ #Region Project Attributes belongs in the SOURCE CODE section. Do NOT move it between sections.");
             // ──────────────────────────────────────────────────────────────
 
+            // Tag files so the AI can never confuse Main.bas with the main module,
+            // while keeping the original `kind` as a file extension for backward compatibility.
+            var filesOutput = files.Select(f =>
+            {
+                bool isMainBas = f.Name.Equals("Main.bas", StringComparison.OrdinalIgnoreCase);
+                bool isProjectFile = projectFile != null &&
+                    string.Equals(f.Path, projectFile, StringComparison.OrdinalIgnoreCase);
+                return new
+                {
+                    path = f.Path,
+                    name = f.Name,
+                    kind = f.Kind,
+                    role = isMainBas ? "corruption" : (isProjectFile ? "main_module" : "module")
+                };
+            });
+
+            int usableFileCount = files.Count(f => !f.Name.Equals("Main.bas", StringComparison.OrdinalIgnoreCase));
+
             var result = new
             {
                 projectRoot = root,
                 projectFile,
+                mainModule = mainModuleName,
                 fileCount = files.Count,
-                files = files.Select(f => new { path = f.Path, name = f.Name, kind = f.Kind }),
+                usableFileCount,
+                files = filesOutput,
                 warnings = warnings
             };
 
@@ -688,8 +715,13 @@ namespace B4XMcpServer.Tools
             : raw;
         bool fileHasHeader = markerIdx >= 0;
 
-        // Normalize line endings to \n for splitting, then split. We restore CRLF at
-        // write time to preserve the file's original style (B4X IDE standard on Windows).
+        // Preserve the file's dominant line ending style (CRLF vs LF) so the IDE and
+        // version control don't see every line changed after a simple edit.
+        int crlfCount = raw.Split("\r\n", StringSplitOptions.None).Length - 1;
+        int lfCount = raw.Split('\n', StringSplitOptions.None).Length - 1 - crlfCount;
+        string lineEnding = lfCount > crlfCount ? "\n" : "\r\n";
+
+        // Normalize line endings to \n for splitting, then split.
         var lines = editableSection.Replace("\r\n", "\n").Split('\n').ToList();
 
         // Split produces a trailing empty element when the file ends with \n
@@ -731,11 +763,11 @@ namespace B4XMcpServer.Tools
         lines[targetIdx] = newContent;
 
         // Reassemble: header (no trailing newline — header already ends with the marker)
-        // + CRLF + code section. Matches EditSub's write style so .b4a/.b4j files stay
-        // byte-identical except for the edited line.
-        var updatedEditable = string.Join("\n", lines);
+        // + original line ending + code section. Matches the file's original style so
+        // .b4a/.b4j files stay byte-identical except for the edited line.
+        var updatedEditable = string.Join(lineEnding, lines);
         string finalContent = fileHasHeader
-            ? header + "\r\n" + updatedEditable
+            ? header + lineEnding + updatedEditable
             : updatedEditable;
 
         // Create .bak AFTER all validation passes. This guarantees the backup is only
@@ -806,6 +838,12 @@ namespace B4XMcpServer.Tools
         // Encoding-detecting read; header-preserving so we can reassemble it below.
         string raw = CodeUtils.DecodeFileWithFallback(filePath);
 
+        // Preserve the file's dominant line ending style (CRLF vs LF) so the IDE and
+        // version control don't see every line changed after a simple insert.
+        int crlfCount = raw.Split("\r\n", StringSplitOptions.None).Length - 1;
+        int lfCount = raw.Split('\n', StringSplitOptions.None).Length - 1 - crlfCount;
+        string lineEnding = lfCount > crlfCount ? "\n" : "\r\n";
+
         const string marker = "@EndOfDesignText@";
         int markerIdx = raw.IndexOf(marker, StringComparison.Ordinal);
 
@@ -842,9 +880,9 @@ namespace B4XMcpServer.Tools
         var newLines = newContent.Replace("\r\n", "\n").Split('\n');
         lines.InsertRange(insertIdx, newLines);
 
-        var updatedEditable = string.Join("\n", lines);
+        var updatedEditable = string.Join(lineEnding, lines);
         string finalContent = fileHasHeader
-            ? header + "\r\n" + updatedEditable
+            ? header + lineEnding + updatedEditable
             : updatedEditable;
 
         // Backup AFTER validation — same atomicity guarantee as EditLine.
@@ -907,6 +945,12 @@ namespace B4XMcpServer.Tools
         // Encoding-detecting read; header-preserving so we can reassemble it below.
         string raw = CodeUtils.DecodeFileWithFallback(filePath);
 
+        // Preserve the file's dominant line ending style (CRLF vs LF) so the IDE and
+        // version control don't see every line changed after a simple delete.
+        int crlfCount = raw.Split("\r\n", StringSplitOptions.None).Length - 1;
+        int lfCount = raw.Split('\n', StringSplitOptions.None).Length - 1 - crlfCount;
+        string lineEnding = lfCount > crlfCount ? "\n" : "\r\n";
+
         const string marker = "@EndOfDesignText@";
         int markerIdx = raw.IndexOf(marker, StringComparison.Ordinal);
 
@@ -939,9 +983,9 @@ namespace B4XMcpServer.Tools
         // Shift every subsequent line up by one.
         lines.RemoveAt(targetIdx);
 
-        var updatedEditable = string.Join("\n", lines);
+        var updatedEditable = string.Join(lineEnding, lines);
         string finalContent = fileHasHeader
-            ? header + "\r\n" + updatedEditable
+            ? header + lineEnding + updatedEditable
             : updatedEditable;
 
         // Backup AFTER validation — same atomicity guarantee as EditLine / InsertLine.
@@ -991,6 +1035,12 @@ namespace B4XMcpServer.Tools
         // Encoding-detecting read; header-preserving so we can reassemble it below.
         string raw = CodeUtils.DecodeFileWithFallback(filePath);
 
+        // Preserve the file's dominant line ending style (CRLF vs LF) so the IDE and
+        // version control don't see every line changed after a simple replace.
+        int crlfCount = raw.Split("\r\n", StringSplitOptions.None).Length - 1;
+        int lfCount = raw.Split('\n', StringSplitOptions.None).Length - 1 - crlfCount;
+        string lineEnding = lfCount > crlfCount ? "\n" : "\r\n";
+
         const string marker = "@EndOfDesignText@";
         int markerIdx = raw.IndexOf(marker, StringComparison.Ordinal);
 
@@ -1039,9 +1089,9 @@ namespace B4XMcpServer.Tools
         lines.RemoveRange(startIdx, rangeSize);
         lines.InsertRange(startIdx, newLines);
 
-        var updatedEditable = string.Join("\n", lines);
+        var updatedEditable = string.Join(lineEnding, lines);
         string finalContent = fileHasHeader
-            ? header + "\r\n" + updatedEditable
+            ? header + lineEnding + updatedEditable
             : updatedEditable;
 
         // Backup AFTER validation — same atomicity guarantee as the trio.

@@ -158,6 +158,14 @@ namespace B4XMcpServer.Engine
 
         private static void CollectStringsFromValue(JsonNode? value, HashSet<string> strings)
         {
+            // The decoder emits StringRef values as plain strings. Treat any raw string
+            // as a cached-string candidate so round-trips of decoded JSON keep working.
+            if (value is JsonValue jv && jv.TryGetValue<string>(out var rawString))
+            {
+                strings.Add(rawString);
+                return;
+            }
+
             if (value is JsonObject obj && obj["tag"] != null)
             {
                 string tag = obj["tag"]?.GetValue<string>() ?? "";

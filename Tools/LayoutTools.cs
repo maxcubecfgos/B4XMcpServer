@@ -34,8 +34,8 @@ namespace B4XMcpServer.Tools
                 PathSecurity.ValidateWithinBaseDirectory(layoutPath, projectRoot, nameof(layoutPath));
 
             var ext = Path.GetExtension(layoutPath).ToLowerInvariant();
-            if (ext != ".bal" && ext != ".bil")
-                throw new ArgumentException("File must have .bal or .bil extension");
+            if (ext != ".bal" && ext != ".bil" && ext != ".bjl")
+                throw new ArgumentException("File must have .bal, .bil or .bjl extension");
 
             JsonObject? json;
             try { json = JsonNode.Parse(jsonContent)?.AsObject(); }
@@ -612,8 +612,10 @@ namespace B4XMcpServer.Tools
                 }
                 else if (prop.Value is JsonValue)
                 {
-                    // Raw value without tag wrapper
-                    errors.Add($"{path}.{prop.Key}: property is a raw value '{prop.Value}'. Must be wrapped as {{\"tag\": \"...\", \"value\": ...}}.");
+                    // Raw values are valid: the decoder emits StringRef values as plain
+                    // strings (and could emit plain ints/floats/bools for other primitive
+                    // tags). The encoder round-trips them correctly, so accept them as-is.
+                    continue;
                 }
             }
 
