@@ -19,4 +19,21 @@
 		<Folder Include="Engine\" />
 	</ItemGroup>
 
+	<!--
+		Bundled B4X skill files. Ship inside the single-file exe so
+		SkillInstaller.cs can copy them next to AGENTS.md on every
+		auto-install without needing to drop sidecar assets on disk.
+		LogicalName is pinned so GetManifestResourceStream can find
+		them by a stable, predictable name regardless of where the
+		project tree happens to live.
+	-->
+	<ItemGroup>
+		<EmbeddedResource Include="Resources\Skills\B4x\SKILL.md">
+			<LogicalName>B4XMcpServer.Resources.Skills.B4x.SKILL.md</LogicalName>
+		</EmbeddedResource>
+		<EmbeddedResource Include="Resources\Skills\B4x\reference.md">
+			<LogicalName>B4XMcpServer.Resources.Skills.B4x.reference.md</LogicalName>
+		</EmbeddedResource>
+	</ItemGroup>
+
 </Project>

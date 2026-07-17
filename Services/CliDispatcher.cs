@@ -364,16 +364,21 @@ namespace B4XMcpServer.Services
             //
             // Keys are CANONICAL names that must match the C# parameter name on the tool.
             // Values are ALL synonyms the dispatcher will accept (in addition to canonical).
+            //
+            // NOTE on '--path': historically this was an alias for BOTH filePath and
+            // projectPath, which is safe only when a tool has one OR the other (never
+            // both). git_show broke that assumption by having both, so '--path' is now
+            // reserved for projectPath. filePath keeps 'moduleName' and 'file' as aliases.
             var aliasByCanonical = new System.Collections.Generic.Dictionary<string, string[]>(System.StringComparer.OrdinalIgnoreCase)
             {
                 // File-path family (get_file_content / analyze_module / edit_* / write_file).
-                ["filePath"]    = new[] { "moduleName", "file", "path" },
+                ["filePath"]    = new[] { "moduleName", "file" },
                 // Layout-path family (get_layout_structure / list_layout_controls / layout_*_control).
                 ["layoutPath"]  = new[] { "layoutFile", "layout" },
                 // Project-path family (compile_project / validate_project / get_project_config /
-                // get_project_structure / get_manifest / write_manifest / validate_event_handlers).
-                // Accept '--path=' as a synonym; safe because no tool currently has BOTH filePath
-                // AND projectPath as separate required params (each tool has exactly one or the other).
+                // get_project_structure / get_manifest / write_manifest / validate_event_handlers,
+                // and all the new git_* tools that take a repo path). '--path' is the universal
+                // "where is the project / repo" alias.
                 ["projectPath"] = new[] { "path" },
                 // EnableLibrary / DisableLibrary use 'projectFile' (not 'projectPath'); accept both.
                 ["projectFile"] = new[] { "projectPath", "project" },

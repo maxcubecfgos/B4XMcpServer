@@ -1,0 +1,31 @@
+---
+name: b4x
+description: B4X (B4A for Android, B4J for desktop/server, B4i for iOS) development patterns, XUI cross-platform library, B4XPages, resumable subs, SQLite, and current best practices. Use whenever writing, reviewing, refactoring, or reasoning about B4X/B4A/B4J/B4i code, .bas modules, b4xlib libraries, or migrating older B4X syntax to current idioms.
+---
+
+# B4X Development
+
+Full language reference, XUI library, B4XPages framework, database patterns,
+collections, custom views, and the current best-practices table (what's
+deprecated vs. current) live in [reference.md](reference.md).
+
+## When to load reference.md
+
+Read `reference.md` whenever the task involves:
+
+- Writing or reviewing B4A/B4J/B4i code
+- B4XPages lifecycle, XUI/B4XView/B4XCanvas usage
+- SQLite (SQL/ResultSet), Resumable Subs, Wait For
+- Deciding whether a pattern in existing code is outdated (see the
+  "Best Practices (What to Avoid)" table in reference.md — check it
+  before assuming an old snippet found online is still current)
+
+## Quick rules to apply even without reading further
+
+- Always target B4XPages, never legacy Activities, for new B4A projects.
+- Never use the Starter service in new B4A code (deprecated as of v13.5) —
+  declare process-global objects in B4XMainPage/Main instead.
+- Always use parameterized queries (ExecQuery2/ExecNonQuery2), never
+  ExecQuery/ExecNonQuery with concatenated SQL.
+- Prefer B4XView/B4XCanvas/XUI over platform-specific views for anything
+  meant to be cross-platform.

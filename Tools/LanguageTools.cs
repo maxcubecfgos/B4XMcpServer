@@ -1,4 +1,5 @@
 ﻿using B4XMcpServer.Repositories;
+using B4XMcpServer.Services;
 using B4XMcpServer.Utils;
 using ModelContextProtocol.Server;
 using System.Collections.Generic;
@@ -10,8 +11,19 @@ namespace B4XMcpServer.Tools
     [McpServerToolType]
     public sealed class LanguageTools
     {
-        public LanguageTools(IFileRepository fileRepository, IProjectRepository projectRepository)
+        private readonly B4xKnowledgeBase _knowledge;
+
+        public LanguageTools(
+            IFileRepository fileRepository,
+            IProjectRepository projectRepository,
+            B4xKnowledgeBase knowledge)
         {
+            // fileRepository / projectRepository are accepted for symmetry
+            // with the rest of the tool classes (and so DI can resolve this
+            // class via the same constructor shape); the existing methods
+            // don't currently need them. _knowledge is the only dep actually
+            // used at runtime — it powers the new B4X-reference query tools.
+            _knowledge = knowledge;
         }
 
         [McpServerTool, Description("Returns critical B4A/B4J language gotchas and pitfalls that frequently cause hard-to-debug bugs. Call this when starting work on a B4X project or when encountering unexpected behavior. Covers: case-insensitivity, variable shadowing, File.Exists with DirAssets, reserved keywords (Is, Rnd, ATan2), Color component extraction, Application_Error pitfalls, B4XView API, project file structure rules, and more.")]
@@ -170,6 +182,111 @@ namespace B4XMcpServer.Tools
                     description = "Sleep(milliseconds) blocks the current Sub entirely for that duration. While sleeping, the UI is frozen. This is fine in non-UI code or very short delays (<100ms), but long Sleep in event handlers freezes the app.",
                     example = "Sub Button_Click: Sleep(2000) — app freezes for 2 seconds. Better: use a Timer for delayed actions.",
                     fix = "For UI delays > 200ms, use a B4XView Timer or CallSubDelayed pattern instead of Sleep. Only use Sleep for sub-100ms animation steps."
+                },
+                // ── Translated from reference.md "Best Practices (What to Avoid)" table ──
+                new
+                {
+                    title = "Never use DoEvents — use Sleep(0) or Wait For instead",
+                    severity = "HIGH",
+                    description = "DoEvents is the legacy way to pump the message loop in B4A. It is unreliable and can swallow exceptions. Modern code uses Sleep(0) for a quick yield or Wait For for proper async coordination.",
+                    example = "DON'T: DoEvents. DO: Sleep(0) inside a tight loop, or restructure the Sub to use Wait For / ResumableSub.",
+                    fix = "Replace DoEvents with Sleep(0) for a single yield, or refactor to a Resumable Sub using Wait For so the framework handles message pumping correctly."
+                },
+                new
+                {
+                    title = "Msgbox (modal) and platform-specific MsgboxAsync / Msgbox2Async are WRONG — use xui.MsgboxAsync + Wait For",
+                    severity = "HIGH",
+                    description = "The plain Msgbox keyword is modal and blocks the UI thread. MsgboxAsync / Msgbox2Async without the xui. prefix are platform-specific and behave differently on B4A vs B4J vs B4i. Only the xui. variants are cross-platform and non-modal.",
+                    example = "DON'T: Msgbox(\"Hello\", \"Title\") — modal, blocks UI. DON'T: MsgboxAsync(\"Hello\", \"Title\") — platform-specific. DO: Dim sf As Object = xui.MsgboxAsync(...): Wait For (sf) Msgbox_Result (Result As Int).",
+                    fix = "Always use xui.MsgboxAsync / xui.Msgbox2Async together with a Wait For (sf) Msgbox_Result (Result As Int) block. Test the result with xui.DialogResponse_Positive / _Negative / _Cancel."
+                },
+                new
+                {
+                    title = "Custom dialog implementations are an anti-pattern — use B4XDialogs",
+                    severity = "MEDIUM",
+                    description = "Rolling a custom dialog from a Panel + set of Buttons is fragile, non-cross-platform, and bypasses accessibility hooks. The B4XDialogs library (xCustomListView-based) handles sizing, theming, and input uniformly across all three platforms.",
+                    example = "DON'T: Build a dialog from scratch with a Panel, two Buttons and a Label. DO: Dim dlg As B4XDialog: dlg.Initialize(Root): dlg.Title = \"Confirm\": dlg.Show(...).",
+                    fix = "Add the B4XDialogs library to the project and use B4XDialog with Show / ShowTemplate for all modal flows."
+                },
+                new
+                {
+                    title = "ListView (B4A) / TableView (B4i) are legacy — use xCustomListView",
+                    severity = "HIGH",
+                    description = "ListView and TableView are old single-platform views. They don't support modern features like lazy loading, multiple item layouts, or per-item selection. xCustomListView is the cross-platform replacement and works identically on B4A, B4i, and B4J.",
+                    example = "DON'T: Activity.AddView(ListView1, ...). DON'T: TableView1.AddRow(...). DO: clv1.Add(CreateListItem(...), \"value\").",
+                    fix = "Replace ListView / TableView with xCustomListView. The API surface (Add, GetItem, Clear, ScrollToItem) is the same; what you change is the item creation pattern using CLVItem."
+                },
+                new
+                {
+                    title = "CustomListView module is deprecated — use the xCustomListView library",
+                    severity = "MEDIUM",
+                    description = "There is a long-standing 'CustomListView' module and a newer 'xCustomListView' library. The module version is older, less performant, and lacks the B4XPages-friendly API. The library is the supported path.",
+                    example = "DON'T: add CustomListView.bas to your project. DO: enable the xCustomListView library via enable_library and use it from any Page.",
+                    fix = "Remove any CustomListView.bas from the project and enable the xCustomListView library. The library version is a drop-in replacement with the same public API."
+                },
+                new
+                {
+                    title = "CallSubDelayed for completion is wrong — return a ResumableSub",
+                    severity = "HIGH",
+                    description = "When one Sub needs to wait for another to finish, the old pattern was CallSubDelayed + a separate callback Sub. That forces a class-global state machine. The modern idiom is to return ResumableSub and Wait For the result directly.",
+                    example = "DON'T: CallSubDelayed(Me, \"OnDownloadComplete\", downloadUrl). DO: Wait For (DownloadAsync(downloadUrl)) Complete (Result As Bitmap).",
+                    fix = "Make the worker Sub return ResumableSub, then in the caller do Wait For (Worker(...)) Complete (Result As Type) to retrieve the result synchronously without an intermediate callback."
+                },
+                new
+                {
+                    title = "Cursor (B4A only) is platform-specific — use ResultSet",
+                    severity = "MEDIUM",
+                    description = "Cursor is the legacy B4A type returned by SQL.ExecQuery. It only works on Android. ResultSet is the cross-platform equivalent supported on B4A, B4i, and B4J with the same API (NextRow, GetString, GetInt, Close).",
+                    example = "DON'T: Dim cur As Cursor = SQL1.ExecQuery(\"...\"). DO: Dim rs As ResultSet = SQL1.ExecQuery2(\"...\", Array(...)).",
+                    fix = "Migrate every Cursor usage to ResultSet. The method names (NextRow, GetString, GetInt, GetLong, Close) are identical; only the type name changes."
+                },
+                new
+                {
+                    title = "ExecQuerySingleResult returns Null if no row matches — use ExecQuery2 + NextRow",
+                    severity = "MEDIUM",
+                    description = "ExecQuerySingleResult is a convenience that returns the first column of the first row, or Null if no row exists. When you genuinely expect one row this is fine, but if no row is a valid state you can't tell 'no row' from 'row whose first column is Null' — both come back as Null.",
+                    example = "DON'T: Dim name As String = SQL1.ExecQuerySingleResult2(\"SELECT Name FROM users WHERE id=?\", Array As String(id)) (indistinguishable from no row). DO: Dim rs As ResultSet = SQL1.ExecQuery2(...): If rs.NextRow Then name = rs.GetString(\"Name\").",
+                    fix = "Use ExecQuery2 + NextRow when 'no row' is a possible outcome you need to distinguish from a NULL column value."
+                },
+                new
+                {
+                    title = "File.DirDefaultExternal / DirRootExternal / DirInternal / DirCache / DirLibrary / DirTemp / DirData are WRONG — use xui.DefaultFolder",
+                    severity = "MEDIUM",
+                    description = "Hard-coding File.DirInternal etc. is fragile because each platform maps those constants to a different physical directory. xui.DefaultFolder is the cross-platform abstraction (B4A=DirInternal, B4i=DirDocuments, B4J=DirData) and lets the same code run on all three.",
+                    example = "DON'T: File.WriteString(File.DirInternal, \"settings.txt\", text). DO: File.WriteString(xui.DefaultFolder, \"settings.txt\", text).",
+                    fix = "Replace all platform-specific File.Dir* constants with xui.DefaultFolder. For user-facing file pickers, use ContentChooser / SaveAs instead."
+                },
+                new
+                {
+                    title = "VideoView is deprecated — use ExoPlayer (MediaPlayer) library",
+                    severity = "MEDIUM",
+                    description = "The built-in VideoView wraps a deprecated Android MediaPlayer and fails on most modern codecs. ExoPlayer is the supported replacement and plays virtually every format Android supports.",
+                    example = "DON'T: Activity.AddView(VideoView1, ...): VideoView1.Play(...). DO: ExoPlayer1.Initialize(...): ExoPlayer1.Prepare(ExoPlayer1.CreateUriSource(...)).",
+                    fix = "Enable the ExoPlayer library and migrate. The ExoPlayer1 wrapper exposes Prepare, Play, Pause, Stop, and Position with the same shape you expect from a media player."
+                },
+                new
+                {
+                    title = "StartServiceAt / StartServiceAtExact are unreliable on modern Android — use StartReceiverAt / StartReceiverAtExact",
+                    severity = "MEDIUM",
+                    description = "Since Android 8+ enforces strict background service limits, StartServiceAt / StartServiceAtExact frequently fail to fire or are killed immediately. The recommended pattern is to schedule a BroadcastReceiver via StartReceiverAt / StartReceiverAtExact, which has looser restrictions.",
+                    example = "DON'T: StartServiceAt(Starter, TimeToRun, false). DO: StartReceiverAt(MyReceiver, TimeToRun, false).",
+                    fix = "For any scheduled background work, use a BroadcastReceiver triggered by StartReceiverAt / StartReceiverAtExact, and keep the receiver's work short-lived."
+                },
+                new
+                {
+                    title = "Multiline strings built with & concatenation — use Smart strings $\"...\"$",
+                    severity = "LOW",
+                    description = "Building a multi-line literal with \"line 1\" & CRLF & \"line 2\" & CRLF & ... is verbose and easy to break. Smart strings (delimited by $\" ... \"$) preserve the source layout verbatim and support ${format}(value) interpolation.",
+                    example = "DON'T: Dim q As String = \"SELECT * FROM users\" & CRLF & \"WHERE age > 18\" & CRLF & \"ORDER BY name\". DO: Dim q As String = $\"SELECT * FROM users{newline}WHERE age > 18{newline}ORDER BY name\"$.",
+                    fix = "Convert any string built from multiple & concatenations to a Smart string. The ${fmt}(value) syntax also handles number formatting (e.g. ${0.2}(123.456))."
+                },
+                new
+                {
+                    title = "Round2 for displayed numbers is old — use NumberFormat / B4XFormatter",
+                    severity = "LOW",
+                    description = "Round2 rounds a number but doesn't control thousands separators, decimal symbol, or grouping. NumberFormat (Java DecimalFormat) and B4XFormatter (B4X-flavored wrapper) give full control over locale-aware formatting.",
+                    example = "DON'T: Dim shown As String = Round2(value, 2). DO: Dim f As B4XFormatter: f.Initialize: f.Format(value) — or NumberFormat2(value, 0, 1, 2, True).",
+                    fix = "Use NumberFormat2 / B4XFormatter for any user-facing number display. Reserve Round2 for internal rounding where you genuinely want 'two decimal places, no separators'."
                 }
             };
 
@@ -263,6 +380,73 @@ namespace B4XMcpServer.Tools
                 availableTypes = api.Keys.ToArray(),
                 hint = "Pass typeName to get signatures for a specific type. E.g. get_core_api(typeName='List')",
                 api
+            }, JsonOptions.Default);
+        }
+
+        [McpServerTool, Description("Returns a section of the bundled B4X development reference. Pass a section name to get just that section; omit to get the full reference. Use list_b4x_reference_sections first to see the available section names (e.g. 'Database (SQLite)', 'XUI Library', 'Best Practices'). The reference is the same content the AGENTS.md installer drops at .b4x-mcp/skills/b4x/reference.md in every B4X project — these tools expose it as structured slices so the model can load just what it needs without paying the cost of a full ~600-line read every time.")]
+        public string GetB4xReference(
+            [Description("Optional case-insensitive substring of a section heading. Examples: 'sqlite', 'xui', 'best_practices', 'resumable'. Omit to return the full reference.")] string? sectionName = null)
+        {
+            if (string.IsNullOrWhiteSpace(sectionName))
+            {
+                return JsonSerializer.Serialize(new
+                {
+                    section = (string?)null,
+                    note = "Full reference returned. Call list_b4x_reference_sections to see the table of contents, or pass sectionName= to get just one section.",
+                    content = _knowledge.GetRawContent()
+                }, JsonOptions.Default);
+            }
+
+            var content = _knowledge.GetSection(sectionName);
+            if (content is null)
+            {
+                return JsonSerializer.Serialize(new
+                {
+                    section = sectionName,
+                    found = false,
+                    hint = "No section matches that name. Call list_b4x_reference_sections to see the available names.",
+                    content = (string?)null
+                }, JsonOptions.Default);
+            }
+
+            return JsonSerializer.Serialize(new
+            {
+                section = sectionName,
+                found = true,
+                content
+            }, JsonOptions.Default);
+        }
+
+        [McpServerTool, Description("Lists the section names of the bundled B4X development reference in document order. Call this before get_b4x_reference to discover which sections are available (e.g. 'Core Philosophy', 'The B4XPages Framework', 'XUI Library', 'Database (SQLite)', 'Best Practices (What to Avoid)').")]
+        public string ListB4xReferenceSections()
+        {
+            var sections = _knowledge.ListSections();
+            return JsonSerializer.Serialize(new
+            {
+                count = sections.Count,
+                sections
+            }, JsonOptions.Default);
+        }
+
+        [McpServerTool, Description("Searches the bundled B4X development reference for a case-insensitive substring and returns up to 10 matching sections, each clipped to a short snippet around the first hit. Use this when you don't know the section name but remember a keyword (e.g. 'ResumableSub', 'ExoPlayer', 'round 2', 'B4XPages'). For full content, follow up with get_b4x_reference(sectionName=...).")]
+        public string SearchB4xReference(
+            [Description("Case-insensitive substring to look for. Plain text only — no regex.")] string query)
+        {
+            if (string.IsNullOrWhiteSpace(query))
+            {
+                return JsonSerializer.Serialize(new
+                {
+                    success = false,
+                    error = "query cannot be empty"
+                }, JsonOptions.Default);
+            }
+
+            var hits = _knowledge.SearchSections(query);
+            return JsonSerializer.Serialize(new
+            {
+                query,
+                count = hits.Count,
+                hits = hits.Select(h => new { h.Section, h.Snippet })
             }, JsonOptions.Default);
         }
     }

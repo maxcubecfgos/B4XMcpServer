@@ -97,6 +97,15 @@ namespace B4XMcpServer.Services
                 Log($"✓ Appended B4X MCP block to existing {AgentsFileName} in {cwd}");
             }
 
+            // After AGENTS.md is settled, also install the bundled B4X skill at
+            // <cwd>/.b4x-mcp/skills/b4x/. Strict parallel idempotency with the
+            // marker check above: if the marker was already intact (the
+            // early-return path) we never reach here, so a clean re-run leaves
+            // existing skill files alone — matching how AGENTS.md itself is
+            // treated. Errors are logged but never bubble up, mirroring how
+            // IsInsideB4xProject swallows IO errors during detection.
+            SkillInstaller.TryInstall(cwd);
+
             return Outcome.Installed;
         }
 
@@ -208,6 +217,22 @@ namespace B4XMcpServer.Services
                 sb.AppendLine();
             }
 
+            sb.AppendLine("## Bundled skills");
+            sb.AppendLine();
+            sb.AppendLine("This helper bundles two B4X reference files at `.b4x-mcp/skills/b4x/`:");
+            sb.AppendLine();
+            sb.AppendLine("- **`SKILL.md`** — discovery manifest (YAML frontmatter; describes when to load the reference and which rules always apply).");
+            sb.AppendLine("- **`reference.md`** — full B4X development reference: B4XPages, XUI, SQLite, Resumable Subs, custom views, and the \"what to avoid\" table.");
+            sb.AppendLine();
+            sb.AppendLine("Load them when starting any B4X task, when reviewing generated code, or when deciding whether an old snippet found online is still current. The installer keeps them in sync with the running executable: a fresh `B4XMcpServer.exe` automatically refreshes the files when the version changes, and never overwrites user-authored content at the same path.");
+            sb.AppendLine();
+            sb.AppendLine("The same content is also exposed as MCP tools so you can pull just the slice you need without paying the cost of re-reading the full 600-line file every time:");
+            sb.AppendLine();
+            sb.AppendLine("- **`list_b4x_reference_sections`** — table of contents. Call first to discover what sections exist (e.g. \"Database (SQLite)\", \"XUI Library\", \"Best Practices\").");
+            sb.AppendLine("- **`search_b4x_reference --query=\"...\"`** — keyword search; returns up to 10 sections with clipped snippets. Use when you remember a feature but not the section name (e.g. `query=\"ExoPlayer\"`, `query=\"ResumableSub\"`).");
+            sb.AppendLine("- **`get_b4x_reference --sectionName=\"...\"`** — fetch one section in full. Follow up on a search hit. Omit `sectionName` to get the whole reference (avoid unless you actually need it).");
+            sb.AppendLine("- **`get_language_gotchas`** — compact list of the \"what to avoid\" entries from the reference; useful before any B4X code change. `get_workflow_guide` auto-recommends it on B4X tasks.");
+            sb.AppendLine();
             sb.AppendLine("## Best practice after any code edit");
             sb.AppendLine();
             sb.AppendLine("Always finish by compiling to verify nothing broke:");

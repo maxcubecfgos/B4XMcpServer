@@ -79,7 +79,23 @@ The block is wrapped between `<!-- BEGIN B4X MCP (auto-generated) -->` and `<!--
 
 MCP-aware clients (Claude Desktop, Cursor, Cline…) pipe both stdio streams and skip this auto-install step entirely — they go straight to MCP server mode unchanged.
 
-To re-generate the AGENTS.md block after adding new tools, delete the file and re-run `B4XMcpServer.exe` from the project directory. The block is idempotent across consecutive runs whenever the markers are intact.
+### Bundled B4X skills
+
+Along with `AGENTS.md`, the installer also drops two B4X reference files into `.b4x-mcp/skills/b4x/` inside the project:
+
+- `SKILL.md` — discovery manifest (YAML frontmatter) pointing to the reference.
+- `reference.md` — full B4X reference: B4XPages, XUI, SQLite, Resumable Subs, custom views, and the “what to avoid” table for current best practices.
+
+Both files are embedded in `B4XMcpServer.exe` itself, so the install is self-contained. The installer records the exe version in a `.installed-by-mcp` sidecar; whenever the running exe is newer than the recorded version it auto-refreshes the skill files. It never overwrites user-authored content at the same path — delete those files (or the sidecar) to let the installer write them.
+
+The same reference is also exposed as structured MCP tools so agents can pull just the slice they need without paying the cost of re-reading the full 600-line file every time:
+
+- **`list_b4x_reference_sections`** — table of contents. Call first to discover what sections exist (e.g. “Database (SQLite)”, “XUI Library”, “Best Practices”).
+- **`search_b4x_reference --query="..."`** — keyword search; returns up to 10 sections with clipped snippets. Use when you remember a feature but not the section name (e.g. `query="ExoPlayer"`, `query="ResumableSub"`).
+- **`get_b4x_reference --sectionName="..."`** — fetch one section in full. Follow up on a search hit. Omit `sectionName` to get the whole reference (avoid unless you actually need it).
+- **`get_language_gotchas`** — compact list of the “what to avoid” entries from the reference, expanded with the patterns that trip up free-tier models. Auto-recommended by `get_workflow_guide` on B4X tasks.
+
+To re-generate the AGENTS.md block after adding new tools, delete the file and re-run `B4XMcpServer.exe` from the project directory. The block is idempotent across consecutive runs whenever the markers are intact; the skill install follows the same idempotency rule, so deleting only `AGENTS.md` re-triggers both.
 
 ### Known limitation
 

@@ -28,6 +28,9 @@ namespace B4XMcpServer.Services
         {
             services.AddSingleton<IFileRepository, FileRepository>();
             services.AddSingleton<IProjectRepository, ProjectRepository>();
+            // Knowledge base that lazy-loads the bundled B4X reference on
+            // first query and exposes it to MCP tools (see B4xKnowledgeBase).
+            services.AddSingleton<B4xKnowledgeBase>();
             return services;
         }
     }

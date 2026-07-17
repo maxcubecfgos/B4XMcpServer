@@ -67,7 +67,7 @@ namespace B4XMcpServer.Tools
                 projectRoot = resolvedRoot,
                 projectFile = resolvedProjectFile,
                 steps,
-                requiredInfo = BuildRequiredInfo(intent, resolvedRoot, resolvedProjectFile),
+                requiredInfo = BuildRequiredInfo(intent, task, resolvedRoot, resolvedProjectFile),
                 note = "Follow the steps in order. Each 'tool' is the MCP tool name; 'params' shows the exact parameter names to use. Values in angle brackets (e.g. <path>) must be filled by you before calling the tool."
             };
 
@@ -233,14 +233,39 @@ namespace B4XMcpServer.Tools
                 };
             }
 
-            // Git operations
-            if (ContainsAny(words, "git", "diff", "log", "status", "commit", "branch"))
+            // Pure B4X API/feature lookup: the task names a B4X concept
+            // (B4XPages, xCustomListView, ExoPlayer, etc.) and no more
+            // specific intent above matched. We do NOT require a question
+            // word here — a declarative mention like "add a B4XPages event
+            // handler" or "switch from ListView to xCustomListView" should
+            // still surface the bundled reference rather than fall through
+            // to the generic explore_project fallback. Routed to
+            // search_b4x_reference so the answer comes from the bundled
+            // master reference rather than guessing.
+            if (TryDetectB4xApiName(task) != null)
+            {
+                return new Intent
+                {
+                    Name = "b4x_api_lookup",
+                    Confidence = ConfidenceLevel.High,
+                    Explanation = "The task is a pure lookup of a specific B4X API or language feature. The bundled B4X reference covers this directly."
+                };
+            }
+
+            // Git operations. The first 6 keywords cover inspection / commit-push
+            // flows; we also route here when the task names a repository ("repo"
+            // / "repository") or uses "clone" so that git_init / git_clone can
+            // be surfaced by the git_ops case below. Note we deliberately do
+            // NOT add "init" alone — it overlaps with non-git usage
+            // (initialize an object, Initialize() methods, etc.).
+            if (ContainsAny(words, "git", "diff", "log", "status", "commit", "branch", "branches",
+                            "repo", "repository", "clone"))
             {
                 return new Intent
                 {
                     Name = "git_ops",
                     Confidence = ConfidenceLevel.High,
-                    Explanation = "The task involves inspecting git state."
+                    Explanation = "The task involves git operations."
                 };
             }
 
@@ -280,6 +305,269 @@ namespace B4XMcpServer.Tools
             return candidates.Any(c => words.Contains(c));
         }
 
+        // ── B4X reference helpers ──────────────────────────────────────
+
+        // Names of B4X APIs / features that, when mentioned in a task
+        // description, justify pre-fetching the relevant section of the
+        // bundled B4X reference via search_b4x_reference. Substring match
+        // (case-insensitive) — a task like "how do I use B4XPages" or
+        // "switch to xCustomListView" both trigger. The list is intentionally
+        // a flat array: order is irrelevant, and the matches line up with the
+        // reference's section naming, not necessarily the runtime API names.
+        // Adding a new B4X API? Just append a string here and the workflow
+        // guide starts recommending search_b4x_reference automatically.
+        private static readonly string[] B4xApiNames =
+        {
+            "B4XPages", "B4XPage_", "B4XPage", "B4XView", "B4XCanvas", "B4XBitmap", "B4XFont",
+            "B4XRect", "B4XPath", "B4XDialog", "B4XDialogs", "B4XCollections",
+            "B4XFormatter", "B4XMainPage", "B4XOrderedMap",
+            "XUI", "xCustomListView",
+            "ResumableSub",
+            "ResultSet", "SQL", "DBUtils", "ExecQuery", "ExecNonQuery",
+            "Msgbox", "ExoPlayer", "VideoView",
+            "NumberFormat", "CallSubDelayed", "CallSubPlus",
+            "StartServiceAt", "StartReceiverAt",
+            "AsyncStreams", "HttpJob", "JavaObject", "NativeObject",
+            "Process_Globals", "Application_Error",
+            "NotInitialized",
+            "Smart String", "smart string", "Round2",
+            "xui.DefaultFolder", "xui.Msgbox",
+        };
+
+        /// <summary>
+        /// Which intents get the B4X reference preamble prepended. Excludes
+        /// pure ops/validation (git_ops, search_code, validate_project,
+        /// explore_project, remove_library, compile_debug) and the
+        /// <c>b4x_api_lookup</c> intent itself (which already drives the
+        /// reference tools explicitly). All code-touching intents and
+        /// <c>api_reference</c> are included so the AI has the bundled
+        /// reference on hand before it starts.
+        /// </summary>
+        private static bool ShouldAddB4xReferencePreamble(string intentName) =>
+            intentName is
+                "edit_code" or
+                "add_layout_control" or
+                "edit_layout" or
+                "create_layout" or
+                "add_library" or
+                "create_module" or
+                "compile_debug" or
+                "debug_runtime" or
+                "api_reference";
+
+        /// <summary>
+        /// Returns the first B4X API name found as a case-insensitive
+        /// substring in <paramref name="task"/>, or <c>null</c> if no
+        /// match. The first match (in <see cref="B4xApiNames"/> declaration
+        /// order) is returned, so callers that need a stable name can rely
+        /// on the array order.
+        /// </summary>
+        private static string? TryDetectB4xApiName(string task)
+        {
+            if (string.IsNullOrEmpty(task)) return null;
+            foreach (var name in B4xApiNames)
+            {
+                if (task.Contains(name, StringComparison.OrdinalIgnoreCase))
+                    return name;
+            }
+            return null;
+        }
+
+        /// <summary>
+        /// Builds 2-3 preamble steps that surface the bundled B4X reference
+        /// tools. Step 1 is always <c>ListB4xReferenceSections</c> (cheap
+        /// table-of-contents call). Step 2 is always <c>GetLanguageGotchas</c>
+        /// so the model has the bundled "what to avoid" list on hand. If the
+        /// task description mentions a known B4X API, a third
+        /// <c>SearchB4xReference</c> step is added targeting that API so the
+        /// model has the relevant section ready before the intent-specific
+        /// work begins.
+        /// </summary>
+        private static List<WorkflowStep> BuildB4xReferencePreamble(int startingStep, string task)
+        {
+            var steps = new List<WorkflowStep>();
+            int n = startingStep;
+            Add(steps, ref n, "ListB4xReferenceSections",
+                "Survey the bundled B4X reference sections so you can pull just the slice you need during the task.",
+                new Dictionary<string, object?>());
+            Add(steps, ref n, "GetLanguageGotchas",
+                "Read the bundled 'what to avoid' gotcha list before writing any B4X code.",
+                new Dictionary<string, object?>());
+            var api = TryDetectB4xApiName(task);
+            if (api != null)
+            {
+                Add(steps, ref n, "SearchB4xReference",
+                    $"The task mentions '{api}'. Search the bundled B4X reference for it before writing code.",
+                    new() { ["query"] = api });
+            }
+            return steps;
+        }
+
+        // ── Git sub-intent helpers ───────────────────────────────────
+
+        /// <summary>
+        /// Coarse classification of a git_ops task. <see cref="None"/> means the
+        /// task is the default inspection / commit-push flow (status → diff →
+        /// add → commit → push). <see cref="InitRepo"/> and <see cref="CloneRepo"/>
+        /// are the two repo-creation flows that need their first step to be
+        /// <c>GitInit</c> or <c>GitClone</c>. <see cref="ShowDiff"/>,
+        /// <see cref="ShowCommit"/>, and <see cref="ListBranches"/> are the three
+        /// read-only inspection flows that surface <c>GitDiff</c>/<c>GitDiffFull</c>,
+        /// <c>GitLog</c>+<c>GitShow</c>, and <c>GitBranchList</c> respectively,
+        /// and skip the add/commit/push follow-up. <see cref="MergeBranch"/> is
+        /// the merge flow that surfaces <c>GitMerge</c> + a post-merge
+        /// <c>GitStatus</c> (no add/commit/push follow-up — the merge commit IS
+        /// the commit).
+        /// </summary>
+        private enum GitSubIntent
+        {
+            None,
+            InitRepo,
+            CloneRepo,
+            ShowDiff,
+            ShowCommit,
+            ListBranches,
+            MergeBranch
+        }
+
+        /// <summary>
+        /// Detects whether a task routed to <c>git_ops</c> is specifically about
+        /// creating / initializing a new repo (<see cref="GitSubIntent.InitRepo"/>)
+        /// or cloning an existing one (<see cref="GitSubIntent.CloneRepo"/>).
+        /// Returns <see cref="GitSubIntent.None"/> for the default
+        /// status/diff/commit/push flow.
+        /// </summary>
+        /// <remarks>
+        /// Both <paramref name="words"/> and <paramref name="lowerTask"/> must
+        /// already be lower-cased so substring / word comparisons are
+        /// case-insensitive by construction. Phrase checks run first (more
+        /// specific, less ambiguous); single-word checks are fallbacks for
+        /// terse prompts like "clone the b4x repo".
+        /// </remarks>
+        private static GitSubIntent DetectGitSubIntent(HashSet<string> words, string lowerTask)
+        {
+            // Multi-word phrases — checked first because they are the most
+            // specific (and least likely to misfire on non-git usage).
+            if (ContainsPhrase(lowerTask,
+                    "initialize a repo", "init a repo", "init the repo", "init this repo",
+                    "create a new repo", "create a new repository",
+                    "new git repo", "new repository", "git init"))
+            {
+                return GitSubIntent.InitRepo;
+            }
+            if (ContainsPhrase(lowerTask,
+                    "git clone", "check out a repo", "checkout a repo",
+                    "clone the repo", "clone the repository",
+                    "clone a repo", "clone a repository",
+                    "clone this repo", "clone this repository"))
+            {
+                return GitSubIntent.CloneRepo;
+            }
+            // Show-diff / "what changed". Phrases cover the natural English
+            // variations; the single-word fallback below picks up terse prompts.
+            if (ContainsPhrase(lowerTask,
+                    "show the diff", "show me the diff", "show diff", "show changes",
+                    "show all changes", "show pending changes", "show uncommitted",
+                    "what changed", "what's changed", "whats changed",
+                    "what is changed", "what was changed", "what has changed",
+                    "uncommitted changes", "working tree changes", "working-tree changes"))
+            {
+                return GitSubIntent.ShowDiff;
+            }
+            // Show-commit. Phrases cover "show me the last commit", "view commit X",
+            // and the natural language a user would type when they want details
+            // for a specific revision.
+            if (ContainsPhrase(lowerTask,
+                    "show commit", "show me commit", "show the commit",
+                    "show a commit", "show this commit", "show last commit",
+                    "show latest commit", "show previous commit",
+                    "show the last commit", "show the latest commit",
+                    "show the previous commit", "view commit", "inspect commit",
+                    "show details of commit", "show details for commit"))
+            {
+                return GitSubIntent.ShowCommit;
+            }
+            // Merge-branch. Phrased here BEFORE ListBranches so the multi-word
+            // "merge branches" / "merge the branch" cases match MergeBranch
+            // first; the single-word "merge" fallback below is similarly
+            // placed before the "branches" fallback for the same reason.
+            if (ContainsPhrase(lowerTask,
+                    "merge branches", "merge the branches",
+                    "merge branch", "merge the branch", "merge this branch",
+                    "merge that branch", "merge a branch",
+                    "merge into", "merge from",
+                    "merge changes from", "merge in changes from",
+                    "git merge"))
+            {
+                return GitSubIntent.MergeBranch;
+            }
+            // List-branches. The plural 'branches' is also a top-level trigger
+            // word in DetectIntent so the user lands in git_ops in the first place.
+            if (ContainsPhrase(lowerTask,
+                    "list branches", "show branches", "show all branches",
+                    "list all branches", "show remote branches", "list remote branches",
+                    "what branches", "which branches", "list local branches",
+                    "show local branches"))
+            {
+                return GitSubIntent.ListBranches;
+            }
+
+            // Single-word fallbacks. 'clone' alone is a strong git signal even
+            // without "repo" (e.g. "clone the B4X samples") because the
+            // routing intent already filtered for git_ops. 'init' alone is too
+            // broad (Initialize() methods, init blocks), so we require the
+            // companion 'repo' / 'repository' word.
+            if (words.Contains("clone"))
+            {
+                return GitSubIntent.CloneRepo;
+            }
+            if ((words.Contains("init") || words.Contains("initialize")) &&
+                (words.Contains("repo") || words.Contains("repository")))
+            {
+                return GitSubIntent.InitRepo;
+            }
+
+            // Inspection-flow single-word fallbacks. 'diff' alone is a strong
+            // inspection signal (the user said "diff" and the intent detector
+            // already routed them here). 'changes' alone is too ambiguous with
+            // "commit my changes", so it is NOT a fallback — it only fires via
+            // the phrase checks above. 'commit' alone is also ambiguous
+            // (commit vs show-commit), so it requires an explicit show verb.
+            if (words.Contains("diff"))
+            {
+                return GitSubIntent.ShowDiff;
+            }
+            if (words.Contains("commit") &&
+                (words.Contains("show") || words.Contains("view") || words.Contains("inspect")))
+            {
+                return GitSubIntent.ShowCommit;
+            }
+            // 'merge' alone is unambiguous in git_ops context (we've already
+            // filtered for git here), so route to MergeBranch. Must run BEFORE
+            // the branches fallback, otherwise "merge branches" would hit
+            // ListBranches first and surface GitBranchList instead of GitMerge.
+            if (words.Contains("merge"))
+            {
+                return GitSubIntent.MergeBranch;
+            }
+            if (words.Contains("branches") ||
+                (words.Contains("branch") && (words.Contains("list") || words.Contains("show") || words.Contains("all"))))
+            {
+                return GitSubIntent.ListBranches;
+            }
+
+            return GitSubIntent.None;
+        }
+
+        private static bool ContainsPhrase(string haystack, params string[] needles)
+        {
+            foreach (var n in needles)
+            {
+                if (haystack.Contains(n)) return true;
+            }
+            return false;
+        }
+
         // ── Step generation ──────────────────────────────────────────
 
         private sealed class WorkflowStep
@@ -296,6 +584,18 @@ namespace B4XMcpServer.Tools
             // steps rely on the caller providing explicit paths in placeholders.
             var steps = new List<WorkflowStep>();
             int stepNumber = 1;
+
+            // B4X reference preamble: surface the bundled reference tools before
+            // any code-touching workflow so the AI has the relevant guidance on
+            // hand. Excluded intents are listed in ShouldAddB4xReferencePreamble.
+            if (ShouldAddB4xReferencePreamble(intent.Name))
+            {
+                foreach (var s in BuildB4xReferencePreamble(stepNumber, task))
+                {
+                    steps.Add(s);
+                    stepNumber++;
+                }
+            }
 
             switch (intent.Name)
             {
@@ -470,6 +770,35 @@ namespace B4XMcpServer.Tools
                             ["typeName"] = Placeholder("<optionalTypeName>"),
                             ["projectPath"] = Placeholder("<projectPath>")
                         });
+                    Add(steps, ref stepNumber, "GetB4xReference", "Or pull a specific section of the bundled B4X reference for deeper language / cross-platform guidance.",
+                        new() { ["sectionName"] = Placeholder("<optionalSectionName>") });
+                    break;
+
+                case "b4x_api_lookup":
+                    // Intent-specific: build a 2-3 step plan that drives the
+                    // three B4X-reference tools directly. The preamble is
+                    // skipped for this intent (see ShouldAddB4xReferencePreamble)
+                    // because we already cover the same ground here with more
+                    // structure: discover sections, search, then optionally
+                    // fetch the full section content.
+                    Add(steps, ref stepNumber, "ListB4xReferenceSections",
+                        "Discover the available sections of the bundled B4X reference.",
+                        new Dictionary<string, object?>());
+                    if (TryDetectB4xApiName(task) is string apiName)
+                    {
+                        Add(steps, ref stepNumber, "SearchB4xReference",
+                            $"Search the bundled B4X reference for '{apiName}'.",
+                            new() { ["query"] = apiName });
+                        Add(steps, ref stepNumber, "GetB4xReference",
+                            "If the hit looks relevant, fetch the full section content.",
+                            new() { ["sectionName"] = apiName });
+                    }
+                    else
+                    {
+                        Add(steps, ref stepNumber, "GetB4xReference",
+                            "Fetch the full reference for context.",
+                            new Dictionary<string, object?>());
+                    }
                     break;
 
                 case "create_module":
@@ -493,14 +822,141 @@ namespace B4XMcpServer.Tools
                     break;
 
                 case "git_ops":
-                    Add(steps, ref stepNumber, "GitStatus", "Check current repository state.",
-                        new() { ["projectPath"] = Placeholder("<projectPath>") });
-                    Add(steps, ref stepNumber, "GitDiff", "Review working-tree changes.",
-                        new()
+                    {
+                        // Detect which git sub-flow the task is asking for.
+                        // - InitRepo / CloneRepo: prepend the repo-creation tool
+                        //   and let the canonical status → diff → add → commit →
+                        //   push follow-up run as the natural next steps (the AI
+                        //   skips whichever ones don't apply).
+                        // - ShowDiff / ShowCommit / ListBranches: read-only
+                        //   inspection flows — surface the right read tool and
+                        //   skip the commit-push follow-up entirely.
+                        // - None: the default status → diff → add → commit → push
+                        //   flow.
+                        var lowerTask = task.ToLowerInvariant();
+                        var taskWords = lowerTask.Split(WordSeparators, StringSplitOptions.RemoveEmptyEntries).ToHashSet();
+                        var sub = DetectGitSubIntent(taskWords, lowerTask);
+
+                        switch (sub)
                         {
-                            ["projectPath"] = Placeholder("<projectPath>"),
-                            ["mode"] = "unstaged"
-                        });
+                            case GitSubIntent.CloneRepo:
+                                Add(steps, ref stepNumber, "GitClone",
+                                    "Clone the remote repository into targetDir. The default branch is checked out automatically — no separate checkout step is required. Uses a 120s timeout to accommodate large repos.",
+                                    new()
+                                    {
+                                        ["url"] = Placeholder("<repositoryUrl>"),
+                                        ["targetDir"] = Placeholder("<targetDir>")
+                                    });
+                                break;
+
+                            case GitSubIntent.InitRepo:
+                                Add(steps, ref stepNumber, "GitInit",
+                                    "Initialize a new git repository at projectPath. With --bare=true, create a bare repository instead (no working tree).",
+                                    new() { ["projectPath"] = Placeholder("<projectPath>") });
+                                break;
+
+                            case GitSubIntent.ShowDiff:
+                                // Two-step inspection: --stat first (fast, won't
+                                // time out even on huge diffs) then full content
+                                // for the lines the AI actually wants to inspect.
+                                Add(steps, ref stepNumber, "GitDiff",
+                                    "Show the --stat summary of working-tree changes first (fast, won't time out) so you can see at a glance which files changed and by how much.",
+                                    new()
+                                    {
+                                        ["projectPath"] = Placeholder("<projectPath>"),
+                                        ["mode"] = "unstaged"
+                                    });
+                                Add(steps, ref stepNumber, "GitDiffFull",
+                                    "Fetch the full unified-diff content for the working-tree changes. Output can be very long — read just the relevant hunk(s) if the diff is large.",
+                                    new()
+                                    {
+                                        ["projectPath"] = Placeholder("<projectPath>"),
+                                        ["mode"] = "unstaged"
+                                    });
+                                break;
+
+                            case GitSubIntent.ShowCommit:
+                                // GitLog first so the AI can identify the commit
+                                // SHA / HEAD position, then GitShow to inspect it.
+                                // The revision placeholder is filled by the AI with
+                                // HEAD, HEAD~N, a SHA, or a branch name.
+                                Add(steps, ref stepNumber, "GitLog",
+                                    "List recent commits so you can identify the revision the task is about.",
+                                    new()
+                                    {
+                                        ["projectPath"] = Placeholder("<projectPath>"),
+                                        ["count"] = 20
+                                    });
+                                Add(steps, ref stepNumber, "GitShow",
+                                    "Show details (metadata + change stats) for the specific commit. Pass revision= with the SHA / HEAD / HEAD~N to inspect. With filePath, shows the file's content at that revision instead of the commit info.",
+                                    new()
+                                    {
+                                        ["projectPath"] = Placeholder("<projectPath>"),
+                                        ["revision"] = Placeholder("<revision>")
+                                    });
+                                break;
+
+                            case GitSubIntent.ListBranches:
+                                // Pass allRemotes=true to also include remote-
+                                // tracking branches — useful when the user is
+                                // asking "what branches exist on the remote".
+                                Add(steps, ref stepNumber, "GitBranchList",
+                                    "List local branches. Pass allRemotes=true to also list remote-tracking branches.",
+                                    new()
+                                    {
+                                        ["projectPath"] = Placeholder("<projectPath>"),
+                                        ["allRemotes"] = false
+                                    });
+                                break;
+
+                            case GitSubIntent.MergeBranch:
+                                // Merge step first, then status to confirm the
+                                // result. With noFf=true for a real merge commit,
+                                // or squash=true to stage a single squashed commit
+                                // (then commit separately). abort=true ignores
+                                // branch= and aborts an in-progress conflicted
+                                // merge.
+                                Add(steps, ref stepNumber, "GitMerge",
+                                    "Merge the source branch into the current branch. Pass branch= with the source branch (or remote-tracking branch like 'origin/dev'). Pass noFf=true to force a merge commit (preserves branch topology). Pass squash=true to stage a single squashed commit (you must commit it separately). Pass abort=true to abort an in-progress merge with conflicts — branch is ignored in that case.",
+                                    new()
+                                    {
+                                        ["projectPath"] = Placeholder("<projectPath>"),
+                                        ["branch"] = Placeholder("<sourceBranch>")
+                                    });
+                                // Status right after the merge to (a) confirm the
+                                // merge succeeded, or (b) detect conflict markers
+                                // in any conflicted files that need manual
+                                // resolution before the user can commit. Does
+                                // NOT continue into the add/commit/push flow —
+                                // the merge commit IS the commit, and pushing it
+                                // is a separate decision the AI should make
+                                // deliberately.
+                                Add(steps, ref stepNumber, "GitStatus",
+                                    "After the merge attempt, check the working-tree state to confirm the merge succeeded or to detect conflict markers in any files that need manual resolution.",
+                                    new() { ["projectPath"] = Placeholder("<projectPath>") });
+                                // Optional push: most users want to share the
+                                // merge commit with teammates once it lands. The
+                                // AI can skip this if the user only wants a
+                                // local merge (e.g. into a personal branch).
+                                Add(steps, ref stepNumber, "GitPush",
+                                    "Optional: push the merge commit to the remote so teammates see it (60s network timeout). Skip this step if the user only wanted a local merge.",
+                                    new()
+                                    {
+                                        ["projectPath"] = Placeholder("<projectPath>")
+                                    });
+                                break;
+                        }
+
+                        // Append the canonical status → diff → add → commit → push
+                        // follow-up for sub-intents that mutate the repo (or are
+                        // explicitly about doing so). Inspection sub-intents
+                        // (ShowDiff / ShowCommit / ListBranches) skip it — the
+                        // user just wants to look, not change anything.
+                        if (sub is GitSubIntent.None or GitSubIntent.InitRepo or GitSubIntent.CloneRepo)
+                        {
+                            AddGitWorkflowFollowUp(steps, ref stepNumber);
+                        }
+                    }
                     break;
 
                 default:
@@ -523,9 +979,48 @@ namespace B4XMcpServer.Tools
             });
         }
 
+        /// <summary>
+        /// Appends the canonical git_ops follow-up: GitStatus → GitDiff →
+        /// GitAdd → GitCommit → GitPush. Used for sub-intents that mutate the
+        /// repo (or are explicitly about doing so): <see cref="GitSubIntent.None"/>,
+        /// <see cref="GitSubIntent.InitRepo"/>, and <see cref="GitSubIntent.CloneRepo"/>.
+        /// Inspection sub-intents (ShowDiff / ShowCommit / ListBranches) skip
+        /// this entirely.
+        /// </summary>
+        private static void AddGitWorkflowFollowUp(List<WorkflowStep> steps, ref int stepNumber)
+        {
+            Add(steps, ref stepNumber, "GitStatus", "Check current repository state.",
+                new() { ["projectPath"] = Placeholder("<projectPath>") });
+            Add(steps, ref stepNumber, "GitDiff", "Review working-tree changes.",
+                new()
+                {
+                    ["projectPath"] = Placeholder("<projectPath>"),
+                    ["mode"] = "unstaged"
+                });
+            // Stage and commit are the common follow-up actions; surface them
+            // so the AI doesn't have to guess at the tool names. The AI can
+            // skip any step that doesn't apply.
+            Add(steps, ref stepNumber, "GitAdd",
+                "Stage the files you want to commit. Pass a comma-separated filePaths= list to be explicit, or set all=true to stage everything (careful: that picks up .env, secrets, build outputs).",
+                new() { ["projectPath"] = Placeholder("<projectPath>") });
+            Add(steps, ref stepNumber, "GitCommit", "Create a commit with a descriptive message.",
+                new()
+                {
+                    ["projectPath"] = Placeholder("<projectPath>"),
+                    ["message"] = Placeholder("<commitMessage>")
+                });
+            Add(steps, ref stepNumber, "GitPush",
+                "Push the new commit to the remote (60s network timeout). Pass setUpstream=true on the first push of a new branch.",
+                new()
+                {
+                    ["projectPath"] = Placeholder("<projectPath>"),
+                    ["setUpstream"] = true
+                });
+        }
+
         private static object Placeholder(string text) => $"{{{text}}}";
 
-        private static List<string> BuildRequiredInfo(Intent intent, string? root, string? projectFile)
+        private static List<string> BuildRequiredInfo(Intent intent, string task, string? root, string? projectFile)
         {
             var required = new List<string>();
 
@@ -554,6 +1049,39 @@ namespace B4XMcpServer.Tools
                     break;
                 case "create_module":
                     required.Add("Choose the new module file path and type (activity/class).");
+                    break;
+                case "git_ops":
+                    {
+                        // Detect sub-intent again so required-info can ask for
+                        // the right missing piece (URL+targetDir for clone,
+                        // projectPath for init, revision for show-commit, etc.).
+                        // Same routine as in BuildSteps — kept duplicated rather
+                        // than threaded through the Intent object to keep the
+                        // diff minimal.
+                        var lowerTask = task.ToLowerInvariant();
+                        var taskWords = lowerTask.Split(WordSeparators, StringSplitOptions.RemoveEmptyEntries).ToHashSet();
+                        var sub = DetectGitSubIntent(taskWords, lowerTask);
+                        switch (sub)
+                        {
+                            case GitSubIntent.CloneRepo:
+                                required.Add("Provide the repository URL (HTTPS, SSH, git://, or a local file path) and the absolute target directory where the clone should be created.");
+                                break;
+                            case GitSubIntent.InitRepo:
+                                required.Add("Provide the absolute directory path where the new repository should be initialized (the directory will be created if it does not exist).");
+                                break;
+                            case GitSubIntent.ShowCommit:
+                                required.Add("Provide the revision to inspect: 'HEAD', 'HEAD~N' (N steps back), a short or full SHA, or a branch name.");
+                                break;
+                            case GitSubIntent.ListBranches:
+                                required.Add("If you also want remote-tracking branches, mention 'all' or 'remote' in your task so the workflow guide sets allRemotes=true.");
+                                break;
+                            case GitSubIntent.MergeBranch:
+                                required.Add("Provide the source branch to merge in (e.g. 'feature-x', or a remote-tracking branch like 'origin/dev'). The current branch is the target — switch to the target branch first if needed.");
+                                break;
+                            // ShowDiff: nothing extra beyond the generic
+                            // projectPath requirement already added at the top.
+                        }
+                    }
                     break;
             }
 
