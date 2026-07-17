@@ -12,7 +12,6 @@ deprecated vs. current) live in [reference.md](reference.md).
 ## When to load reference.md
 
 Read `reference.md` whenever the task involves:
-
 - Writing or reviewing B4A/B4J/B4i code
 - B4XPages lifecycle, XUI/B4XView/B4XCanvas usage
 - SQLite (SQL/ResultSet), Resumable Subs, Wait For

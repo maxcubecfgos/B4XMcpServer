@@ -31,7 +31,160 @@ namespace B4XMcpServer.Tools
             _projectRepository = projectRepository;
         }
 
-        // Clase auxiliar para cache de ValidateProject
+        // ── Header parsing helper (shared across get_file_content, analyze_module, get_project_structure, edit tools) ──
+
+        /// <summary>Parsed metadata header fields from a .bas or .b4a/.b4j/.b4i file.</summary>
+        private sealed class ParsedHeader
+        {
+            public bool HasMarker { get; set; }
+            public string? Platform { get; set; }        // "B4A", "B4J", "B4i", or null if absent
+            public string? Group { get; set; }            // e.g. "Default Group"
+            public string? ModulesStructureVersion { get; set; }
+            public string? Type { get; set; }             // Class, Service, Activity, CodeModule
+            public string? Version { get; set; }           // IDE version that saved the file
+            public Dictionary<string, string> AllFields { get; set; } = null!;
+            public int HeaderLineCount { get; set; }       // number of lines before @EndOfDesignText@
+        }
+
+        /// <summary>
+        /// Parses the metadata header from a B4X file's raw content.
+        /// Returns null if the marker is absent (non-B4X file or corrupted).
+        /// </summary>
+        private static ParsedHeader? ParseFileHeader(string rawContent)
+        {
+            const string marker = "@EndOfDesignText@";
+            int markerIdx = rawContent.IndexOf(marker, StringComparison.Ordinal);
+            if (markerIdx < 0) return null;
+
+            string headerSection = rawContent.Substring(0, markerIdx);
+            var lines = headerSection.Split('\n');
+            int headerLineCount = lines.Length;
+
+            var fields = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var line in lines)
+            {
+                var trimmed = line.TrimEnd('\r').Trim();
+                if (string.IsNullOrEmpty(trimmed)) continue;
+                int eq = trimmed.IndexOf('=');
+                if (eq <= 0) continue;
+                fields[trimmed.Substring(0, eq).Trim()] = trimmed.Substring(eq + 1).Trim();
+            }
+
+            string? platform = null;
+            if (fields.TryGetValue("B4A", out var b4a) && string.Equals(b4a, "true", StringComparison.OrdinalIgnoreCase)) platform = "B4A";
+            else if (fields.TryGetValue("B4J", out var b4j) && string.Equals(b4j, "true", StringComparison.OrdinalIgnoreCase)) platform = "B4J";
+            else if (fields.TryGetValue("B4i", out var b4i) && string.Equals(b4i, "true", StringComparison.OrdinalIgnoreCase)) platform = "B4i";
+
+            fields.TryGetValue("Group", out var group);
+            fields.TryGetValue("ModulesStructureVersion", out var msv);
+            fields.TryGetValue("Type", out var type);
+            fields.TryGetValue("Version", out var version);
+
+            // Counting mismatches and numbering gaps are validated by
+            // ValidateProjectBeforeCompile at compile time — ParseFileHeader
+            // just captures the raw fields for informational display.
+
+            return new ParsedHeader
+            {
+                HasMarker = true,
+                Platform = platform,
+                Group = group,
+                ModulesStructureVersion = msv,
+                Type = type,
+                Version = version,
+                AllFields = fields,
+                HeaderLineCount = headerLineCount
+            };
+        }
+
+        private static void ValidateSequentialNumbering(Dictionary<string, string> fields, string prefix, int expectedCount, List<string> warnings)
+        {
+            var numKey = $"NumberOf{prefix}s";
+            if (!fields.TryGetValue(numKey, out var numStr) || !int.TryParse(numStr, out int declared))
+            {
+                if (expectedCount > 0)
+                    warnings.Add($"⚠️ Missing {numKey} — found {expectedCount} {prefix}N entries. Add: {numKey}={expectedCount}");
+                return;
+            }
+            if (declared != expectedCount)
+                warnings.Add($"❌ {numKey}={declared} but found {expectedCount} {prefix}N entries. Update {numKey} to {expectedCount}.");
+
+            var numbers = fields.Keys
+                .Where(k => Regex.IsMatch(k, $@"^{Regex.Escape(prefix)}\d+$", RegexOptions.None, RegexTimeout))
+                .Select(k => int.Parse(Regex.Match(k, @"\d+", RegexOptions.None, RegexTimeout).Value))
+                .OrderBy(n => n)
+                .ToList();
+            for (int i = 0; i < numbers.Count; i++)
+            {
+                if (numbers[i] != i + 1)
+                {
+                    warnings.Add($"❌ {prefix} numbering is not sequential. Expected {prefix}{i + 1} but found {prefix}{numbers[i]}. Renumber all {prefix}N entries sequentially starting from 1.");
+                    break;
+                }
+            }
+        }
+
+        /// <summary>
+        /// Detects the line range of sacred region blocks (#Region Project Attributes and
+        /// #Region Activity Attributes) in the source code section. Returns null if no
+        /// sacred region found (non-project file or the region was removed).
+        /// </summary>
+        private static (int startLine, int endLine, string regionName)? FindSacredRegion(
+            string codeSection, string regionName)
+        {
+            var lines = codeSection.Replace("\r\n", "\n").Split('\n');
+            int? regionStart = null;
+            for (int i = 0; i < lines.Length; i++)
+            {
+                var line = lines[i].Trim();
+                // Match "#Region  Project Attributes" or "#Region Project Attributes"
+                if (line.StartsWith("#Region", StringComparison.OrdinalIgnoreCase) &&
+                    line.Contains(regionName, StringComparison.OrdinalIgnoreCase))
+                {
+                    regionStart = i + 1; // 1-based
+                }
+                else if (regionStart.HasValue && line.StartsWith("#End Region", StringComparison.OrdinalIgnoreCase))
+                {
+                    return (regionStart.Value, i + 1, regionName);
+                }
+            }
+            return null;
+        }
+
+        /// <summary>
+        /// Checks whether the given line range [startLine, endLine] overlaps with any
+        /// sacred region (#Region Project Attributes or #Region Activity Attributes).
+        /// Returns a warning string if overlap is detected, null otherwise.
+        /// </summary>
+        private static string? DetectSacredRegionEdit(List<string> codeLines, int startLine, int endLine, string filePath)
+        {
+            // Only check .b4a/.b4j/.b4i files (where sacred regions exist)
+            var ext = Path.GetExtension(filePath).ToLowerInvariant();
+            if (ext != ".b4a" && ext != ".b4j" && ext != ".b4i") return null;
+
+            string codeSection = string.Join("\n", codeLines);
+            var overlaps = new List<string>();
+
+            foreach (var regionName in new[] { "Project Attributes", "Activity Attributes" })
+            {
+                var region = FindSacredRegion(codeSection, regionName);
+                if (region == null) continue;
+
+                // Check for overlap: [startLine, endLine] intersects [region.startLine, region.endLine]
+                if (startLine <= region.Value.endLine && endLine >= region.Value.startLine)
+                {
+                    overlaps.Add($"#Region {region.Value.regionName} (lines {region.Value.startLine}-{region.Value.endLine})");
+                }
+            }
+
+            if (overlaps.Count == 0) return null;
+
+            return $"This edit overlaps with SACRED REGION(S): {string.Join(", ", overlaps)}. " +
+                   "These blocks contain #ApplicationLabel, #VersionCode, #FullScreen, #IncludeTitle — essential IDE settings. " +
+                   "Editing them can corrupt the project and break compilation. Proceed only if absolutely sure.";
+        }
+
+        // ──  Clase auxiliar para cache de ValidateProject ──
         private class CachedParseResult
         {
             public List<B4xParser.ParseIssue> Issues { get; set; } = new();
@@ -104,17 +257,42 @@ namespace B4XMcpServer.Tools
 
             // Tag files so the AI can never confuse Main.bas with the main module,
             // while keeping the original `kind` as a file extension for backward compatibility.
+            // Also include per-module header metadata for .bas files.
             var filesOutput = files.Select(f =>
             {
                 bool isMainBas = f.Name.Equals("Main.bas", StringComparison.OrdinalIgnoreCase);
                 bool isProjectFile = projectFile != null &&
                     string.Equals(f.Path, projectFile, StringComparison.OrdinalIgnoreCase);
+
+                // Parse header for .bas modules to expose type/version/group
+                object? headerInfo = null;
+                if (f.Kind == "bas" && _fileRepository.Exists(f.Path))
+                {
+                    try
+                    {
+                        string raw = _fileRepository.ReadTextWithHeader(f.Path);
+                        var parsed = ParseFileHeader(raw);
+                        if (parsed != null)
+                        {
+                            headerInfo = new
+                            {
+                                type = parsed.Type,
+                                version = parsed.Version,
+                                group = parsed.Group,
+                                platform = parsed.Platform
+                            };
+                        }
+                    }
+                    catch { /* best-effort: skip header parsing for unreadable files */ }
+                }
+
                 return new
                 {
                     path = f.Path,
                     name = f.Name,
                     kind = f.Kind,
-                    role = isMainBas ? "corruption" : (isProjectFile ? "main_module" : "module")
+                    role = isMainBas ? "corruption" : (isProjectFile ? "main_module" : "module"),
+                    header = headerInfo
                 };
             });
 
@@ -134,7 +312,7 @@ namespace B4XMcpServer.Tools
             return JsonSerializer.Serialize(result, JsonOptions.Default);
         }
 
-        [McpServerTool, Description("Returns the full text content of a file (B4X module .bas, project file .b4a/.b4j/.b4i, or any other text file). For .bas and project files (.b4a/.b4j/.b4i), strips the IDE metadata header automatically ONLY when the @EndOfDesignText@ marker is present; if the marker is missing, returns the full content including any header.")]
+        [McpServerTool, Description("Returns the full text content of a file (B4X module .bas, project file .b4a/.b4j/.b4i, or any other text file). For .bas and project files (.b4a/.b4j/.b4i), strips the IDE metadata header automatically ONLY when the @EndOfDesignText@ marker is present; if the marker is missing, returns the full content including any header. ALSO returns parsed header metadata (platform, type, version, group, modulesStructureVersion) for .bas/.b4a/.b4j/.b4i files so you know the module's structure without a separate analyze_module call.")]
         public string GetFileContent(
             [Description("Absolute path to the file to read.")] string filePath)
         {
@@ -148,7 +326,58 @@ namespace B4XMcpServer.Tools
             bool isBasFile = ext == ".bas";
 
             if (isProjectFile || isBasFile)
-                return _fileRepository.ReadText(filePath);
+            {
+                string raw = _fileRepository.ReadTextWithHeader(filePath);
+                var parsed = ParseFileHeader(raw);
+                // Strip header from raw content in memory (avoid second disk read)
+                string content = parsed != null && parsed.HasMarker
+                    ? raw.Substring(raw.IndexOf("@EndOfDesignText@", StringComparison.Ordinal) + "@EndOfDesignText@".Length).TrimStart('\r', '\n')
+                    : raw;
+
+                if (parsed != null)
+                {
+                    // Build header summary
+                    var headerFields = new Dictionary<string, string?>();
+                    foreach (var kv in parsed.AllFields)
+                        headerFields[kv.Key] = kv.Value;
+
+                    int libraryCount = parsed.AllFields.Keys.Count(k => Regex.IsMatch(k, @"^Library\d+$", RegexOptions.None, RegexTimeout));
+                    int moduleCount = parsed.AllFields.Keys.Count(k => Regex.IsMatch(k, @"^Module\d+$", RegexOptions.None, RegexTimeout));
+                    int fileCount = parsed.AllFields.Keys.Count(k => Regex.IsMatch(k, @"^File\d+$", RegexOptions.None, RegexTimeout));
+
+                    var numberingWarnings = new List<string>();
+                    ValidateSequentialNumbering(parsed.AllFields, "Library", libraryCount, numberingWarnings);
+                    ValidateSequentialNumbering(parsed.AllFields, "Module", moduleCount, numberingWarnings);
+                    ValidateSequentialNumbering(parsed.AllFields, "File", fileCount, numberingWarnings);
+
+                    return JsonSerializer.Serialize(new
+                    {
+                        filePath,
+                        header = new
+                        {
+                            platform = parsed.Platform,
+                            type = parsed.Type,
+                            version = parsed.Version,
+                            group = parsed.Group,
+                            modulesStructureVersion = parsed.ModulesStructureVersion,
+                            headerLineCount = parsed.HeaderLineCount,
+                            // Project-level counts (only meaningful for .b4a/.b4j/.b4i)
+                            libraryCount = libraryCount > 0 ? libraryCount : (int?)null,
+                            moduleCount = moduleCount > 0 ? moduleCount : (int?)null,
+                            fileCount = fileCount > 0 ? fileCount : (int?)null,
+                            numberOfLibraries = parsed.AllFields.TryGetValue("NumberOfLibraries", out var nl) ? nl : null,
+                            numberOfModules = parsed.AllFields.TryGetValue("NumberOfModules", out var nm) ? nm : null,
+                            numberOfFiles = parsed.AllFields.TryGetValue("NumberOfFiles", out var nf) ? nf : null,
+                            headerIntegrityWarnings = numberingWarnings.Count > 0 ? numberingWarnings : null
+                        },
+                        // CRITICAL reminder for the AI
+                        _reminder = "The header section (before @EndOfDesignText@) is SACRED. NEVER modify header fields except via enable_library/disable_library/library tools. The content field below is the SOURCE CODE section only — editing tools use 1-based line numbers relative to this content.",
+                        content
+                    }, JsonOptions.Default);
+                }
+
+                return content;
+            }
 
             return _fileRepository.ReadText(filePath);
         }
@@ -164,6 +393,23 @@ namespace B4XMcpServer.Tools
             string? projectRoot = _projectRepository.FindProjectRoot(PathSecurity.GetDirectoryForProjectRoot(filePath));
             if (projectRoot != null)
                 PathSecurity.ValidateWithinBaseDirectory(filePath, projectRoot, nameof(filePath));
+
+            // BLOCK writes to .meta files — they are pure IDE session state.
+            // Writing to them can desync the IDE and looks like corruption.
+            if (Path.GetExtension(filePath).Equals(".meta", StringComparison.OrdinalIgnoreCase))
+            {
+                return JsonSerializer.Serialize(new
+                {
+                    success = false,
+                    error = "❌ CRITICAL: Cannot write to .meta files. These contain pure IDE session state (ModuleBookmarks, ModuleBreakpoints, ModuleClosedNodes, NavigationStack, SelectedBuild, VisibleModules) — NONE of this affects compilation. Writing to .meta files at best does nothing useful, at worst desyncs what the IDE shows from what's actually true and looks like corruption to the developer.",
+                    hints = new[]
+                    {
+                        ".meta files are NEVER to be read, written, or modified by automated tools.",
+                        "Use get_project_structure for file lists, get_project_config for project metadata, analyze_module for code structure.",
+                        "If a .meta file is corrupt, delete it — the IDE will regenerate it on next open."
+                    }
+                }, JsonOptions.Default);
+            }
 
             // CRITICAL: block CREATING a new Main.bas when the parent directory
             // already has a B4X project file. The .b4a/.b4j IS the Main module —
@@ -817,6 +1063,31 @@ namespace B4XMcpServer.Tools
                     nextSteps: new[] { "Call get_file_content, find the correct line, then call edit_line again with the right line number." });
         }
 
+        // Sacred region guard: detect if the edit falls within #Region Project Attributes
+        // or #Region Activity Attributes blocks and reject the edit with a clear error.
+        if (fileHasHeader)
+        {
+            string? sacredWarning = DetectSacredRegionEdit(lines, lineNumber, lineNumber, filePath);
+            if (sacredWarning != null)
+            {
+                return ToolResponse.Error(
+                    "⚠️ SACRED REGION — EDIT BLOCKED",
+                    data: new
+                    {
+                        filePath,
+                        lineNumber,
+                        originalLine,
+                        sacredRegion = sacredWarning
+                    },
+                    hints: new[]
+                    {
+                        "This edit targets a SACRED REGION (#Region Project/Activity Attributes). These contain #ApplicationLabel, #VersionCode, #FullScreen, #IncludeTitle — essential IDE settings.",
+                        "Editing these regions can corrupt the project and break compilation.",
+                        "If you absolutely MUST change a value here (e.g., #VersionCode), use edit_line with expectedText to confirm the exact line you're changing."
+                    });
+            }
+        }
+
         // Apply the edit. Empty newContent DELETES the line (shift lines up);
         // non-empty content replaces the line in place.
         string[]? insertedLines = null;
@@ -937,6 +1208,28 @@ namespace B4XMcpServer.Tools
 
         int insertIdx = lineNumber - 1;
 
+        // Sacred region guard: reject insertions into sacred regions.
+        if (fileHasHeader)
+        {
+            string? sacredWarning = DetectSacredRegionEdit(lines, lineNumber, lineNumber, filePath);
+            if (sacredWarning != null)
+            {
+                return ToolResponse.Error(
+                    "⚠️ SACRED REGION — INSERT BLOCKED",
+                    data: new
+                    {
+                        filePath,
+                        lineNumber,
+                        sacredRegion = sacredWarning
+                    },
+                    hints: new[]
+                    {
+                        "You are attempting to insert INTO a sacred region block (#Region Project/Activity Attributes). These contain essential IDE settings.",
+                        "Inserting lines inside sacred regions can corrupt the project. Add new #attribute lines directly above or below the existing #End Region, or use edit_line to modify an existing attribute value."
+                    });
+            }
+        }
+
         // Split newContent into the lines to insert. Allow embedded \n so a single call
         // can insert a multi-line block (e.g. a complete Sub). For empty newContent
         // Split returns [""], which inserts one blank line — consistent with the
@@ -1028,6 +1321,35 @@ namespace B4XMcpServer.Tools
 
         int startIdx = startLine - 1;
         int rangeSize = endLine - startLine + 1;
+
+        // Sacred region guard: reject replacements in sacred regions.
+        if (fileHasHeader)
+        {
+            string? sacredWarning = DetectSacredRegionEdit(lines, startLine, endLine, filePath);
+            if (sacredWarning != null)
+            {
+                var sacredRemoved = new List<string>(rangeSize);
+                for (int i = 0; i < rangeSize; i++)
+                    sacredRemoved.Add(lines[startIdx + i]);
+
+                return ToolResponse.Error(
+                    "⚠️ SACRED REGION — REPLACE BLOCKED",
+                    data: new
+                    {
+                        filePath,
+                        startLine,
+                        endLine,
+                        removedRange = sacredRemoved,
+                        sacredRegion = sacredWarning
+                    },
+                    hints: new[]
+                    {
+                        "This replace overlaps with SACRED REGION blocks (#Region Project/Activity Attributes). These contain essential IDE settings (#ApplicationLabel, #VersionCode, #FullScreen, #IncludeTitle).",
+                        "Replacing lines inside sacred regions can corrupt the project and break compilation.",
+                        "If you need to change a specific attribute value, use edit_line on that exact line with expectedText for safety."
+                    });
+            }
+        }
 
         // Snapshot the removed range so the AI can inspect it (useful for undo /
         // verifying "I just deleted exactly these N lines").
@@ -1275,6 +1597,15 @@ namespace B4XMcpServer.Tools
             var result = JsonSerializer.Serialize(new
             {
                 filePath,
+                // ── Header metadata (parsed from before @EndOfDesignText@) ──
+                header = ParseFileHeader(_fileRepository.ReadTextWithHeader(filePath)) is { } h ? new
+                {
+                    platform = h.Platform,
+                    type = h.Type,
+                    version = h.Version,
+                    group = h.Group,
+                    modulesStructureVersion = h.ModulesStructureVersion
+                } : null,
                 hasProcessGlobals = nodes.Any(n => n.Kind == "Process_Globals"),
                 hasGlobals = nodes.Any(n => n.Kind == "Globals"),
                 hasClassGlobals = nodes.Any(n => n.Kind == "Class_Globals"),

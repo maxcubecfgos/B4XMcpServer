@@ -183,6 +183,47 @@ namespace B4XMcpServer.Tools
                     example = "Sub Button_Click: Sleep(2000) — app freezes for 2 seconds. Better: use a Timer for delayed actions.",
                     fix = "For UI delays > 200ms, use a B4XView Timer or CallSubDelayed pattern instead of Sleep. Only use Sleep for sub-100ms animation steps."
                 },
+                // ── Translated from reference.md "Module & Project File Structure" section ──
+                new
+                {
+                    title = ".bas Module Header Anatomy: B4A=, Group=, ModulesStructureVersion=, Type=, Version= before @EndOfDesignText@",
+                    severity = "CRITICAL",
+                    description = "Every .bas module has a strict metadata header terminated by @EndOfDesignText@ with exactly 5 fields: B4A=/B4J=/B4i=true (which IDE), Group=Default Group (designer group), ModulesStructureVersion=1 (internal format — NEVER change), Type=Class|Service|Activity|CodeModule, and Version=13.4 (IDE version that saved the file, NOT your app version). Everything before @EndOfDesignText@ is metadata; everything after is designer text + actual code.",
+                    example = "DON'T regenerate the header block from scratch. DON'T modify Version= or ModulesStructureVersion=. DO targeted line replacement and leave every other line byte-for-byte identical, including trailing spaces.",
+                    fix = "If you need to change something in the header, use edit_line on the specific line only. Never write_file a .bas file with a regenerated header — it corrupts the module silently (module disappears from IDE, no compile error)."
+                },
+                new
+                {
+                    title = "Project file numbering MUST be sequential 1..N with no gaps and matching counts",
+                    severity = "CRITICAL",
+                    description = "Project files (.b4a/.b4j/.b4i) use sequentially numbered keys: Library1=, Library2=, ..., LibraryN= with NumberOfLibraries=N. Same pattern for ModuleN= (with NumberOfModules) and FileN= (with NumberOfFiles). The numeric suffix is an opaque ID — NEVER resort or renumber existing entries. Adding without incrementing the count, or removing without renumbering + decrementing, silently corrupts the project.",
+                    example = "DON'T: add Library19=b4xpages to a project with NumberOfLibraries=18 without incrementing to 19. DON'T: delete Module3 and leave a gap. DO: append next sequential number, increment count in the same edit. When removing, close the gap by renumbering and decrement the count.",
+                    fix = "Use enable_library/disable_library for libraries — they handle numbering automatically. For modules, use the B4X IDE (Project → Add Existing Module) to register them. For manual edits, always follow the sequential-numbering rules from section 18.3 of reference.md."
+                },
+                new
+                {
+                    title = "ManifestCode is a single escaped one-line string with ~\\n~ tokens — NEVER reformat",
+                    severity = "CRITICAL",
+                    description = "In .b4a project files, ManifestCode=... is stored as a SINGLE LINE with the literal escape sequence ~\\n~ representing newlines. Reformatting it into actual multi-line text corrupts the project file and the IDE will refuse to parse the manifest.",
+                    example = "DON'T: replace '~\\n~' with real newlines in ManifestCode. DON'T: break ManifestCode into multiple lines. DO: leave it as the exact one-line escaped string the IDE wrote.",
+                    fix = "Use the write_manifest tool to safely modify the Android manifest. Never manually edit ManifestCode= in the project file with raw text tools."
+                },
+                new
+                {
+                    title = ".meta files are pure IDE session state — NEVER read, write, or modify them",
+                    severity = "CRITICAL",
+                    description = "Files like Project.b4a.meta contain IDE-only data: ModuleBookmarks*, ModuleBreakpoints*, ModuleClosedNodes* (collapsed tree nodes), NavigationStack (recent-location history), SelectedBuild, VisibleModules. None of this affects compilation. Writing to .meta files at best does nothing useful, at worst desyncs what the IDE shows from reality and looks like corruption to the developer.",
+                    example = "DON'T: write_file on any .meta file. DON'T: read .meta files to 'understand' the project state. DO: ignore .meta files completely — they are IDE session state, not project source.",
+                    fix = "An AI/MCP tool should never touch .meta files. Use get_project_structure for file lists, get_project_config for metadata, analyze_module for code structure."
+                },
+                new
+                {
+                    title = "Safe-editing checklist for automated tools: only touch after @EndOfDesignText@, preserve exact whitespace",
+                    severity = "HIGH",
+                    description = "When programmatically editing B4X files: (1) Only touch code after @EndOfDesignText@ unless the task specifically requires adding a library/file/module/designer property. (2) When adding, append the next sequential number + increment count. (3) When removing, close the gap by renumbering + decrement count. (4) NEVER modify Version=, ModulesStructureVersion=, or B4A=/B4J=/B4i= lines. (5) NEVER write to .meta files. (6) Preserve exact whitespace/trailing spaces in #Region lines — B4X's parser is picky about this.",
+                    example = "DON'T: strip trailing spaces from '#Region  Service Attributes '. DON'T: change 'ModulesStructureVersion=1' to 'ModulesStructureVersion=2'. DO: leave header fields exactly as you found them, byte-for-byte.",
+                    fix = "Use the dedicated tools whenever possible: enable_library/disable_library for libraries, edit_sub for code, edit_line for single-line changes, and never use write_file on existing .b4a/.b4j/.b4i/.bas files unless absolutely necessary (and never on .meta files)."
+                },
                 // ── Translated from reference.md "Best Practices (What to Avoid)" table ──
                 new
                 {
