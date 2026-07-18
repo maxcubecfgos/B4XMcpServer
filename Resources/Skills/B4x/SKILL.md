@@ -40,3 +40,16 @@ matching counts. Editing these incorrectly corrupts the project silently
 it covers the exact rules for adding/removing libraries, modules, and
 designer properties without breaking numbering, and what must never be
 touched (Version=, .meta files).
+
+When modifying these files via the MCP code-editing tools
+(`edit_line`, `insert_line`, `replace_lines`, `edit_sub`, `analyze_module`),
+always use **FILE-LINE** coordinates — 1-based line numbers counted from
+the absolute first line of the file, INCLUDING the IDE metadata header.
+`get_file_content` returns an explicit `lines` array that maps the exact
+text to FILE-LINE numbers; copy those numbers directly into editing
+tools. Do NOT subtract a "header offset" yourself — the tools
+internally reject edits targeting header rows `[1, lineOffset]`. The
+legacy `content` field on `get_file_content` is source-line only and is
+kept for backward compatibility; prefer `lines` to avoid the off-by-N
+confusion that compiler error output (which is FILE-LINE) is meant to
+prevent.

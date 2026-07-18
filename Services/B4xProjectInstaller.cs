@@ -171,8 +171,10 @@ namespace B4XMcpServer.Services
             sb.AppendLine();
             sb.AppendLine("Every B4X module (`.bas`, `.b4a`, `.b4j`) has the same internal layout:");
             sb.AppendLine();
-            sb.AppendLine("1. **Metadata header** (IDE settings like `NumberOfModules=`, `Library1=`, `@EndOfDesignText@`) — stripped by `get_file_content`, preserved by editing tools.");
-            sb.AppendLine("2. **Source code section** (after `@EndOfDesignText@`) — this is what `get_file_content` returns.");
+            sb.AppendLine("1. **Metadata header** (IDE settings like `NumberOfModules=`, `Library1=`, `@EndOfDesignText@`) — preserved by editing tools. **Never modify header rows via code tools** — use `enable_library`/`disable_library`/`write_manifest`/`register_layout_in_project`/`register_module_in_project` instead.");
+            sb.AppendLine("2. **Source code section** (after `@EndOfDesignText@`).");
+            sb.AppendLine();
+            sb.AppendLine("**Line numbering is universally FILE-LINE.** All editing tools (`edit_line`, `insert_line`, `replace_lines`, `edit_sub`), `analyze_module`, and `compile_project` error output use **1-based line numbers counted from the absolute first line of the file, INCLUDING the IDE metadata header** — the same convention as B4X compile error output. `get_file_content` returns an explicit `lines` array `[{line: FILE_LINE, text: \"...\"}, ...]` plus `lineNumbering=\"file\"` and `lineOffset` (header size); the legacy `content` field is source-line only and kept for backward compatibility — **always prefer the `lines` array when you need line numbers**. Editor calls targeting header lines `[1, lineOffset]` are rejected; targeting the source code section lines `[lineOffset + 1, totalLines]` is allowed.");
             sb.AppendLine();
             sb.AppendLine("The source code section ALWAYS starts with:");
             sb.AppendLine();
