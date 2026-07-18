@@ -17,6 +17,8 @@
 
 	<ItemGroup>
 		<Folder Include="Engine\" />
+		<Folder Include="Engine\Language\" />
+		<Folder Include="Engine\Layout\" />
 	</ItemGroup>
 
 	<!--

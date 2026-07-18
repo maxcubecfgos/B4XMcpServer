@@ -13,7 +13,7 @@ namespace B4XMcpServer.Utils
     /// the allocation churn on the hot path of every MCP tool response.
     ///
     /// The <see cref="DefaultJsonTypeInfoResolver"/> is required when serializing
-    /// a <c>JsonNode</c> tree (e.g. the output of <c>BalDecoder</c>) via
+    /// a <c>JsonNode</c> tree (e.g. the output of <c>LayoutParser</c>) via
     /// <c>JsonNode.ToJsonString(options)</c> — without it, .NET 8 throws
     /// <c>InvalidOperationException: JsonSerializerOptions instance must specify
     /// a TypeInfoResolver</c>. Anonymous-object serialization (which is what

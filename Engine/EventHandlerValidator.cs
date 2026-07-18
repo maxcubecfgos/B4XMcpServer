@@ -2,9 +2,8 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
-using System.Text.Json;
-using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
+using B4XMcpServer.Engine;
 using B4XMcpServer.Services;
 using B4XMcpServer.Utils;
 
@@ -345,11 +344,8 @@ namespace B4XMcpServer.Engine
                 try
                 {
                     var data = File.ReadAllBytes(layout.Path);
-                    var decoded = BalDecoder.DecodeToObject(data);
-                    if (decoded.TryGetPropertyValue("rootControl", out var rootObj) && rootObj is JsonObject rootControl)
-                    {
-                        CollectControlsFromLayout(rootControl, controlTypes);
-                    }
+                    var layoutFile = LayoutParser.ParseLayoutFile(data);
+                    CollectControlsFromLayout(layoutFile.RootControl, controlTypes);
                 }
                 catch
                 {
@@ -360,26 +356,17 @@ namespace B4XMcpServer.Engine
             return controlTypes;
         }
 
-        private static void CollectControlsFromLayout(JsonObject node, Dictionary<string, string> controlTypes)
+        private static void CollectControlsFromLayout(ControlNode node, Dictionary<string, string> controlTypes)
         {
-            if (node.TryGetPropertyValue("properties", out var propsObj) && propsObj is JsonObject props)
+            var name = PropertyModel.GetStr(node, "name", "");
+            var type = PropertyModel.GetStr(node, "type", "");
+            if (!string.IsNullOrEmpty(name) && !string.IsNullOrEmpty(type))
             {
-                var name = props["name"]?.GetValue<string>();
-                var type = props["type"]?.GetValue<string>();
-                if (!string.IsNullOrEmpty(name) && !string.IsNullOrEmpty(type))
-                {
-                    controlTypes[name] = type;
-                }
+                controlTypes[name] = type;
             }
 
-            if (node.TryGetPropertyValue("children", out var kidsObj) && kidsObj is JsonArray kids)
-            {
-                foreach (var kid in kids)
-                {
-                    if (kid is JsonObject kidDict)
-                        CollectControlsFromLayout(kidDict, controlTypes);
-                }
-            }
+            foreach (var child in node.Children)
+                CollectControlsFromLayout(child, controlTypes);
         }
 
         private static List<string> ReadReferencedLibraries(string projectFile)

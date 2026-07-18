@@ -4,7 +4,7 @@ using System.IO;
 using System.Linq;
 using System.Text;
 using B4XMcpServer.Models;
-using B4XEngineCore;
+using B4XMcpServer.Engine;
 using FileMode = B4XMcpServer.Models.FileMode;
 
 namespace B4XMcpServer.Services
@@ -122,7 +122,7 @@ namespace B4XMcpServer.Services
         }
 
         /// <summary>
-        /// Builds a skeleton of a B4X module using B4XEngineCore function blocks
+        /// Builds a skeleton of a B4X module using B4XMcpServer.Engine function blocks
         /// and regex scanning for Type declarations. Sub bodies are collapsed
         /// except for names in keepFullNames (Globals/PG/CG and the active sub).
         /// Leading comments are preserved before each collapsed block.

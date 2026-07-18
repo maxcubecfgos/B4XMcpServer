@@ -258,15 +258,23 @@ namespace B4XMcpServer.Engine
             return result;
         }
 
+        /// <summary>
+        /// Finds the Sub that contains <paramref name="line"/> (1-based) by using
+        /// <see cref="DocumentAnalysisEngine"/> — faster than a full token parse.
+        /// Returns the Sub name, or null if the line is not inside any Sub.
+        /// </summary>
         public static string? FindEnclosingSub(string source, int line)
         {
             try
             {
-                var (root, issues) = Parse(source);
-                var nodes = FlattenSubsAndTypes(root);
-                foreach (var node in nodes)
+                var lines = source.Replace("\r\n", "\n").Split('\n');
+                DocumentAnalysisEngine.AnalyzeDocumentForFunctionBlocks(lines);
+                // DocumentAnalysisEngine uses 0-based line indices; our caller uses 1-based.
+                int zeroBased = line - 1;
+                foreach (var block in DocumentAnalysisEngine.FunctionBlockList)
                 {
-                    if (node.Kind == "Sub" && node.StartLine <= line && (node.EndLine ?? node.StartLine) >= line) return node.Name;
+                    if (block.LineStart <= zeroBased && block.LineEnd >= zeroBased)
+                        return block.FunctionName;
                 }
             }
             catch { }

@@ -2,14 +2,14 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
-using B4XEngineCore;
+using B4XMcpServer.Engine;
 using B4XMcpServer.Repositories;
 
 namespace B4XMcpServer.Tools.Layout
 {
     /// <summary>
     /// Shared helpers for the layout tool classes. All layout I/O goes through
-    /// <see cref="B4XEngineCore.LayoutParser"/> and <see cref="B4XEngineCore.LayoutWriter"/>
+    /// <see cref="B4XMcpServer.Engine.LayoutParser"/> and <see cref="B4XMcpServer.Engine.LayoutWriter"/>
     /// so the tools never re-implement the binary format themselves.
     /// </summary>
     public static class LayoutHelpers
