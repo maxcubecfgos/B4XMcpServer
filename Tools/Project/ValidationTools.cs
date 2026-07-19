@@ -12,10 +12,10 @@ using System.Text.Json;
 
 namespace B4XMcpServer.Tools.Project
 {
-    internal class CachedParseResult
-    {
-        public List<B4xParser.ParseIssue> Issues { get; set; } = new();
-    }
+internal class CachedParseResult
+{
+    public List<ParseIssue> Issues { get; set; } = new();
+}
 
     [McpServerToolType]
     public sealed class ValidationTools
@@ -101,11 +101,9 @@ namespace B4XMcpServer.Tools.Project
                     continue;
                 }
 
-                // FALLBACK NOTE: This tool detects structural issues (unclosed Subs/Types/Regions,
-                // mismatched End statements) — the new_engine's DocumentAnalysisEngine only finds
-                // function blocks (Subs) and cannot detect these. Using legacy B4xParser exclusively
-                // for issue detection until new_engine is extended with structural diagnostics.
-                var (_, issues) = B4xParser.Parse(source);
+                // Uses the enhanced DocumentAnalysisEngine.ParseModule which now provides
+                // stack-based structural diagnostics (unclosed Subs/Types, mismatched End).
+                var (_, issues) = DocumentAnalysisEngine.ParseModule(source);
                 CacheManager.SetByMtime(f.Path, new CachedParseResult { Issues = issues });
 
                 if (issues.Count > 0)

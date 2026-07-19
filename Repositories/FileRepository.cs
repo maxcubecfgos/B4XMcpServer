@@ -44,7 +44,18 @@ namespace B4XMcpServer.Repositories
             var lockObj = _locks.GetOrAdd(path, _ => new object());
             lock (lockObj)
             {
-                File.WriteAllText(path, content, System.Text.Encoding.UTF8);
+                // Preserve the original file encoding: B4X files are commonly Windows-1252,
+                // and writing them as UTF-8 breaks the B4X IDE's ability to parse them.
+                System.Text.Encoding encoding;
+                if (File.Exists(path))
+                {
+                    CodeUtils.DecodeFileWithFallback(path, out encoding);
+                }
+                else
+                {
+                    encoding = System.Text.Encoding.UTF8;
+                }
+                File.WriteAllText(path, content, encoding);
                 CacheManager.Invalidate(path);
             }
         }

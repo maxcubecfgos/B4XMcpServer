@@ -43,6 +43,7 @@ namespace B4XMcpServer.Services
             typeof(LibraryTools),
             typeof(WorkflowTools),
             typeof(RuntimeTools),
+            typeof(ConfigTools),
         };
     }
 }

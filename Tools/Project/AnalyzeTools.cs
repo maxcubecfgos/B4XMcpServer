@@ -44,50 +44,30 @@ namespace B4XMcpServer.Tools.Project
                 ? source.Substring(0, analyzeMarkerIdx).Split('\n').Length
                 : 0;
 
-            // ── PRIMARY: Use new_engine (DocumentAnalysisEngine) for Sub detection ──
-            // The new engine is the canonical source of truth for B4X code analysis.
-            var lines = source.Replace("\r\n", "\n").Split('\n');
-            DocumentAnalysisEngine.AnalyzeDocumentForFunctionBlocks(lines);
-            var functionBlocks = DocumentAnalysisEngine.FunctionBlockList;
+            // ── PRIMARY: Use enhanced DocumentAnalysisEngine.ParseModule for full AST ──
+            var (root, issues) = DocumentAnalysisEngine.ParseModule(source);
+            var nodes = DocumentAnalysisEngine.FlattenSubsAndTypes(root);
 
-            // ── FALLBACK: Use old B4xParser for Type declarations, params/return types, parse issues ──
-            // new_engine doesn't yet expose Type declarations or parameter/return-type info,
-            // so we supplement from the legacy parser. These will be migrated when
-            // new_engine's capabilities are extended.
-            var (root, issues) = B4xParser.Parse(source);
-            var nodes = B4xParser.FlattenSubsAndTypes(root);
-
-            // Build a lookup from old parser results by name and line for supplementing
-            // parameters and return type info that new_engine's FunctionBlock doesn't expose.
-            var oldSubsByName = nodes
-                .Where(n => n.Kind == "Sub")
-                .ToLookup(n => n.Name, StringComparer.OrdinalIgnoreCase);
-
-            var subs = functionBlocks.Select(b =>
-            {
-                // Match by name (case-insensitive) to get params/returnType from old parser
-                var oldNode = oldSubsByName[b.FunctionName].FirstOrDefault();
-                return new
+            var subs = nodes
+                .Where(n => n.Kind == ParseNodeKind.Sub)
+                .Select(n => new
                 {
-                    name = b.FunctionName,
-                    parameters = oldNode?.Params,
-                    returnType = oldNode?.ReturnType,
-                    isPrivate = b.FunctionScopeValue == FunctionScope.Private,
-                    looksLikeEventHandler = Regex.IsMatch(b.FunctionName,
-                        @"_(Click|Create|Resume|Pause|CheckedChange|TextChanged|Tick|JobDone|Complete|ItemClick|LongClick|FocusChanged)$",
-                        RegexOptions.IgnoreCase, ProjectHelpersShared.RegexTimeout),
-                    startLine = b.LineStart + 1 + analyzeHeaderLineCount,
-                    endLine = b.LineEnd + 1 + analyzeHeaderLineCount
-                };
-            }).ToList();
+                    name = n.Name,
+                    parameters = string.IsNullOrEmpty(n.Params) ? null : (string?)n.Params,
+                    returnType = string.IsNullOrEmpty(n.ReturnType) ? null : (string?)n.ReturnType,
+                    isPrivate = n.IsPrivate,
+                    looksLikeEventHandler = n.LooksLikeEventHandler,
+                    startLine = n.StartLine + analyzeHeaderLineCount,
+                    endLine = (n.EndLine ?? n.StartLine) + analyzeHeaderLineCount
+                }).ToList();
 
             var types = nodes
-                .Where(n => n.Kind == "Type")
+                .Where(n => n.Kind == ParseNodeKind.Type)
                 .Select(n => new { name = n.Name, startLine = n.StartLine + analyzeHeaderLineCount, endLine = (n.EndLine ?? n.StartLine) + analyzeHeaderLineCount }).ToList();
 
-            bool hasGlobals = source.Contains("Sub Globals", StringComparison.OrdinalIgnoreCase) ||
-                              source.Contains("Sub Process_Globals", StringComparison.OrdinalIgnoreCase) ||
-                              source.Contains("Sub Class_Globals", StringComparison.OrdinalIgnoreCase);
+            bool hasProcessGlobals = root.Children.Any(c => c.Kind == ParseNodeKind.ProcessGlobals);
+            bool hasGlobals = root.Children.Any(c => c.Kind == ParseNodeKind.Globals);
+            bool hasClassGlobals = root.Children.Any(c => c.Kind == ParseNodeKind.ClassGlobals);
 
             var parseIssues = issues.Select(i => new { line = i.Line + analyzeHeaderLineCount, message = i.Message, severity = i.Severity }).ToList();
 
@@ -100,12 +80,12 @@ namespace B4XMcpServer.Tools.Project
                 subs,
                 typeCount = types.Count,
                 types,
-                hasGlobals,
+                hasGlobals = hasProcessGlobals || hasGlobals || hasClassGlobals,
                 globalsHeaders = new
                 {
-                    hasProcessGlobals = source.Contains("Sub Process_Globals", StringComparison.OrdinalIgnoreCase),
-                    hasGlobals = source.Contains("Sub Globals", StringComparison.OrdinalIgnoreCase),
-                    hasClassGlobals = source.Contains("Sub Class_Globals", StringComparison.OrdinalIgnoreCase)
+                    hasProcessGlobals,
+                    hasGlobals,
+                    hasClassGlobals
                 },
                 issueCount = parseIssues.Count,
                 issues = parseIssues,

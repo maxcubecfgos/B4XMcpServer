@@ -30,7 +30,8 @@ namespace B4XMcpServer.Tools.Project
             "*** CRITICAL: This is the ONLY way to compile. NEVER run shell commands (dir, cd, type, cat, B4ABuilder.exe, etc.). If compilation fails, this tool returns the exact errors with file names, line numbers, and source lines. READ THEM and fix the code — do not try to debug by running commands manually. ***")]
         public async Task<string> CompileProject(
             [Description("Absolute path to the B4X project folder, or to its .b4a/.b4j project file.")] string projectPath,
-            [Description("Timeout in seconds. Default 300.")] int timeoutSeconds = 300)
+            [Description("Timeout in seconds. Default 300.")] int timeoutSeconds = 300,
+            [Description("Delete the Objects/ output folder before building to force a clean rebuild. Default false.")] bool cleanBuild = false)
         {
             PathSecurity.ValidateAbsolutePath(projectPath, nameof(projectPath));
 
@@ -39,6 +40,27 @@ namespace B4XMcpServer.Tools.Project
                 return ToolResponse.Error(
                     $"No .b4a/.b4j/.b4i project file found for '{projectPath}'.",
                     hints: new[] { "Pass the project folder path, not a file that doesn't exist.", "Confirm the project file is at the project root, not nested in a subfolder." });
+
+            // ── CLEAN BUILD ──────────────────────────────────────────────
+            if (cleanBuild)
+            {
+                string projectDir = Path.GetDirectoryName(projectFile) ?? ".";
+                string objectsDir = Path.Combine(projectDir, "Objects");
+                if (Directory.Exists(objectsDir))
+                {
+                    try
+                    {
+                        Directory.Delete(objectsDir, recursive: true);
+                    }
+                    catch (Exception ex)
+                    {
+                        return ToolResponse.Error(
+                            $"Failed to clean Objects/ directory: {ex.Message}",
+                            hints: new[] { "Close the B4X IDE if it's locking files in Objects/." });
+                    }
+                }
+            }
+            // ──────────────────────────────────────────────────────────────
 
             // ── PRE-COMPILE VALIDATION ────────────────────────────────────
             var preCheckErrors = ValidateProjectBeforeCompile(projectFile);
@@ -95,6 +117,12 @@ namespace B4XMcpServer.Tools.Project
 
             if (!success)
             {
+                // ── Adjust line numbers: B4X compiler reports lines relative to the
+                // source-code section (after @EndOfDesignText@), but users see the
+                // full file. Add the header line offset so line numbers match the
+                // actual file in the editor. ────────────────────────────────────
+                AdjustErrorLineNumbers(buildResult, projectFile);
+
                 var formattedErrors = BuildFormatter.Format(buildResult);
                 return ToolResponse.Error(
                     "COMPILATION FAILED.",
@@ -110,6 +138,40 @@ namespace B4XMcpServer.Tools.Project
             return ToolResponse.Success(
                 data: new { builder = builderPath, message = $"Compilation OK — {errorCount} error(s), 0 warnings." },
                 hints: new[] { "If you still see compilation errors in the output, run compile_project again. If it keeps reporting success, the errors may be in a different project file." });
+        }
+
+        /// <summary>
+        /// Adds the header line count to each error's b4x_line so numbers match the
+        /// full file, not just the source-code section after @EndOfDesignText@.
+        /// </summary>
+        private void AdjustErrorLineNumbers(Dictionary<string, object?> buildResult, string projectFile)
+        {
+            if (!buildResult.TryGetValue("errors", out var errsObj) || errsObj is not System.Collections.IList errsList)
+                return;
+
+            string raw = _fileRepository.ReadTextWithHeader(projectFile);
+            const string marker = "@EndOfDesignText@";
+            int markerIdx = raw.IndexOf(marker, StringComparison.Ordinal);
+            if (markerIdx < 0) return;
+
+            // Count lines before the marker (the header section)
+            int headerLineCount = raw.Substring(0, markerIdx).Split('\n').Length;
+
+            foreach (var err in errsList)
+            {
+                if (err is Dictionary<string, object?> e && e.TryGetValue("b4x_line", out var lineObj) && lineObj != null)
+                {
+                    // b4x_line may be int or string; handle both
+                    if (lineObj is int lineNum)
+                    {
+                        e["b4x_line"] = lineNum + headerLineCount;
+                    }
+                    else if (int.TryParse(lineObj.ToString(), out int parsedLine))
+                    {
+                        e["b4x_line"] = parsedLine + headerLineCount;
+                    }
+                }
+            }
         }
 
         /// <summary>

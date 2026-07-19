@@ -50,6 +50,16 @@ namespace B4XMcpServer.Services
         /// </summary>
         public static string DecodeFileWithFallback(string path)
         {
+            return DecodeFileWithFallback(path, out _);
+        }
+
+        /// <summary>
+        /// Reads a file and decodes it with encoding detection, also returning the
+        /// encoding that was used. This lets callers preserve the original encoding
+        /// when writing back (critical for B4X files that use Windows-1252).
+        /// </summary>
+        public static string DecodeFileWithFallback(string path, out Encoding usedEncoding)
+        {
             var raw = File.ReadAllBytes(path);
             // Strip BOM if present
             if (raw.Length >= 3 && raw[0] == 0xEF && raw[1] == 0xBB && raw[2] == 0xBF)
@@ -58,27 +68,29 @@ namespace B4XMcpServer.Services
             }
 
             string? text = null;
+            Encoding? detected = null;
             foreach (var enc in EncodingsToTry)
             {
                 try
                 {
-                    // See ReadTextSafely's historical note: ExceptionFallback is required or
-                    // this cascade never actually falls through past UTF-8.
                     var encoding = Encoding.GetEncoding(enc, EncoderFallback.ExceptionFallback, DecoderFallback.ExceptionFallback);
                     text = encoding.GetString(raw);
+                    detected = encoding;
                     break;
                 }
                 catch (Exception ex) when (ex is DecoderFallbackException or NotSupportedException or ArgumentException)
                 {
-                    // DecoderFallbackException: bytes aren't valid in this encoding — try the next one.
-                    // NotSupportedException: encoding unavailable (shouldn't happen now that the
-                    //   CodePagesEncodingProvider is registered, but fail safe rather than crash
-                    //   if it's ever missing on some runtime).
-                    // ArgumentException: malformed/unknown encoding name — same fail-safe reasoning.
                 }
             }
 
-            return text ?? Encoding.Latin1.GetString(raw);
+            if (text == null)
+            {
+                detected = Encoding.Latin1;
+                text = detected.GetString(raw);
+            }
+
+            usedEncoding = detected!;
+            return text;
         }
 
         public static string ExtractSub(string source, int startLine, int endLine)
