@@ -92,81 +92,32 @@ namespace B4XMcpServer.Tools
             var lower = task.ToLowerInvariant();
             var words = lower.Split(WordSeparators, StringSplitOptions.RemoveEmptyEntries).ToHashSet();
 
-            // Compound / layout + code tasks
+            // Layout-related tasks — all layout creation and modification is blocked.
+            // Must be done manually by the programmer in the B4X Designer.
             if (ContainsAny(words, "layout", "bal", "bjl", "bil", "designer"))
             {
-                if (ContainsAny(words, "add", "insert", "create", "new") &&
-                    ContainsAny(words, "button", "label", "edit", "text", "image", "control", "view"))
-                {
-                    return new Intent
-                    {
-                        Name = "add_layout_control",
-                        Confidence = ConfidenceLevel.High,
-                        Explanation = "The task involves adding a UI control to a visual layout."
-                    };
-                }
-
-                if (ContainsAny(words, "move", "resize", "reposition"))
-                {
-                    return new Intent
-                    {
-                        Name = "edit_layout",
-                        Confidence = ConfidenceLevel.High,
-                        Explanation = "The task involves changing the position or size of an existing layout control."
-                    };
-                }
-
-                if (ContainsAny(words, "remove", "delete", "eliminate"))
-                {
-                    return new Intent
-                    {
-                        Name = "edit_layout",
-                        Confidence = ConfidenceLevel.High,
-                        Explanation = "The task involves removing controls from a layout."
-                    };
-                }
-
-                if (ContainsAny(words, "create", "new") && ContainsAny(words, "layout", "file"))
-                {
-                    return new Intent
-                    {
-                        Name = "create_layout",
-                        Confidence = ConfidenceLevel.High,
-                        Explanation = "The task involves creating a new layout file."
-                    };
-                }
-
-                // Generic layout-related task
                 return new Intent
                 {
-                    Name = "edit_layout",
-                    Confidence = ConfidenceLevel.Medium,
-                    Explanation = "The task mentions a layout but the exact action is unclear."
+                    Name = "layout_blocked",
+                    Confidence = ConfidenceLevel.High,
+                    Explanation = "Layout creation and modification is blocked. Layout changes must be made in the B4X Designer by the programmer directly."
                 };
             }
 
-            // Library management
+            // Library management — all library enable/disable is blocked.
+            // Must be done manually by the programmer through the IDE.
             if (ContainsAny(words, "library", "libraries", "enable", "disable", "add library", "remove library"))
             {
-                if (ContainsAny(words, "remove", "disable", "delete"))
-                {
-                    return new Intent
-                    {
-                        Name = "remove_library",
-                        Confidence = ConfidenceLevel.High,
-                        Explanation = "The task involves removing/disabling a library from the project."
-                    };
-                }
-
                 return new Intent
                 {
-                    Name = "add_library",
+                    Name = "library_blocked",
                     Confidence = ConfidenceLevel.High,
-                    Explanation = "The task involves adding/enabling a library in the project."
+                    Explanation = "Library management is blocked. Libraries must be enabled/disabled manually by the programmer through the B4X IDE."
                 };
             }
 
-            // Module creation
+            // Module creation — file creation is blocked.
+            // Must be done manually by the programmer in the B4X IDE.
             if (ContainsAny(words, "create", "new") && ContainsAny(words, "module", "bas", "class", "activity"))
             {
                 return new Intent
@@ -346,10 +297,6 @@ namespace B4XMcpServer.Tools
         private static bool ShouldAddB4xReferencePreamble(string intentName) =>
             intentName is
                 "edit_code" or
-                "add_layout_control" or
-                "edit_layout" or
-                "create_layout" or
-                "add_library" or
                 "create_module" or
                 "compile_debug" or
                 "debug_runtime" or
@@ -624,97 +571,17 @@ namespace B4XMcpServer.Tools
                         new() { ["projectPath"] = Placeholder("<projectPath>") });
                     break;
 
-                case "add_layout_control":
-                    Add(steps, ref stepNumber, "GetProjectStructure", "Confirm the project and locate the layout file.",
+                case "layout_blocked":
+                    Add(steps, ref stepNumber, "GetProjectStructure", "Inspect the project to understand the current layout structure (read-only).",
                         new() { ["projectPath"] = Placeholder("<projectPath>") });
-                    Add(steps, ref stepNumber, "ListLayoutControls", "Inspect the current layout controls before adding one.",
+                    Add(steps, ref stepNumber, "GetLayoutStructure", "Read the layout structure as JSON for reference (read-only).",
                         new() { ["layoutPath"] = Placeholder("<layoutPath>") });
-                    Add(steps, ref stepNumber, "LayoutAddControl", "Add the new control to the layout.",
-                        new()
-                        {
-                            ["layoutPath"] = Placeholder("<layoutPath>"),
-                            ["controlType"] = Placeholder("<controlType>"),
-                            ["controlName"] = Placeholder("<controlName>")
-                        });
-                    Add(steps, ref stepNumber, "GenerateCodeFromLayout", "Generate the Dim declaration and event Sub skeleton in the target module.",
-                        new()
-                        {
-                            ["layoutPath"] = Placeholder("<layoutPath>"),
-                            ["controlName"] = Placeholder("<controlName>"),
-                            ["sourcePath"] = Placeholder("<sourcePath>"),
-                            ["generate"] = "both"
-                        });
-                    Add(steps, ref stepNumber, "CompileProject", "Compile to verify the change.",
-                        new() { ["projectPath"] = Placeholder("<projectPath>") });
                     break;
 
-                case "edit_layout":
-                    Add(steps, ref stepNumber, "GetProjectStructure", "Locate the layout file.",
+                case "library_blocked":
+                    Add(steps, ref stepNumber, "ListProjectLibraries", "List the currently enabled libraries (read-only).",
                         new() { ["projectPath"] = Placeholder("<projectPath>") });
-                    Add(steps, ref stepNumber, "GetLayoutStructure", "Inspect the full layout JSON before modifying it.",
-                        new() { ["layoutPath"] = Placeholder("<layoutPath>") });
-                    Add(steps, ref stepNumber, "ListLayoutControls", "List controls to confirm names and positions.",
-                        new() { ["layoutPath"] = Placeholder("<layoutPath>") });
-                    Add(steps, ref stepNumber, "LayoutMoveControl", "Move/resize the control, or LayoutRemoveControl to delete it.",
-                        new()
-                        {
-                            ["layoutPath"] = Placeholder("<layoutPath>"),
-                            ["controlName"] = Placeholder("<controlName>")
-                        });
-                    Add(steps, ref stepNumber, "CompileProject", "Compile to verify the change.",
-                        new() { ["projectPath"] = Placeholder("<projectPath>") });
-                    break;
-
-                case "create_layout":
-                    Add(steps, ref stepNumber, "GetProjectStructure", "Confirm project root and choose the layout file path.",
-                        new() { ["projectPath"] = Placeholder("<projectPath>") });
-                    Add(steps, ref stepNumber, "CreateEmptyLayout", "Generate a valid empty layout JSON for the target platform.",
-                        new() { ["platform"] = Placeholder("<b4a|b4j>") });
-                    Add(steps, ref stepNumber, "WriteLayout", "Write the JSON to a .bal/.bjl file inside the project.",
-                        new()
-                        {
-                            ["layoutPath"] = Placeholder("<layoutPath>"),
-                            ["jsonContent"] = Placeholder("<jsonContent>")
-                        });
-                    Add(steps, ref stepNumber, "RegisterLayoutInProject", "Register the new layout in the project metadata.",
-                        new()
-                        {
-                            ["projectPath"] = Placeholder("<projectPath>"),
-                            ["layoutPath"] = Placeholder("<layoutPath>")
-                        });
-                    Add(steps, ref stepNumber, "CompileProject", "Compile to verify the change.",
-                        new() { ["projectPath"] = Placeholder("<projectPath>") });
-                    break;
-
-                case "add_library":
-                    Add(steps, ref stepNumber, "ListAvailableLibraries", "Check that the library exists and is available.",
-                        new() { ["projectPath"] = Placeholder("<projectPath>") });
-                    Add(steps, ref stepNumber, "EnableLibrary", "Add the library to the project metadata.",
-                        new()
-                        {
-                            ["projectFile"] = Placeholder("<projectPath>"),
-                            ["libraryName"] = Placeholder("<libraryName>")
-                        });
-                    Add(steps, ref stepNumber, "GetLibraryDocs", "Read the library API before writing code that uses it.",
-                        new()
-                        {
-                            ["libraryName"] = Placeholder("<libraryName>"),
-                            ["projectPath"] = Placeholder("<projectPath>")
-                        });
-                    Add(steps, ref stepNumber, "CompileProject", "Compile to verify the change.",
-                        new() { ["projectPath"] = Placeholder("<projectPath>") });
-                    break;
-
-                case "remove_library":
-                    Add(steps, ref stepNumber, "ListProjectLibraries", "Confirm the library is currently enabled.",
-                        new() { ["projectPath"] = Placeholder("<projectPath>") });
-                    Add(steps, ref stepNumber, "DisableLibrary", "Remove the library from the project metadata.",
-                        new()
-                        {
-                            ["projectFile"] = Placeholder("<projectPath>"),
-                            ["libraryName"] = Placeholder("<libraryName>")
-                        });
-                    Add(steps, ref stepNumber, "CompileProject", "Compile to verify nothing breaks.",
+                    Add(steps, ref stepNumber, "ListAvailableLibraries", "List all available libraries on the system (read-only).",
                         new() { ["projectPath"] = Placeholder("<projectPath>") });
                     break;
 
@@ -1032,10 +899,11 @@ namespace B4XMcpServer.Tools
 
             switch (intent.Name)
             {
-                case "add_layout_control":
-                case "edit_layout":
-                case "create_layout":
-                    required.Add("Identify the target layout file (e.g. Main.bal).");
+                case "layout_blocked":
+                    required.Add("Layout changes must be made manually by the programmer in the B4X Designer. Use read_layout or list_layout_controls to inspect the layout for reference.");
+                    break;
+                case "library_blocked":
+                    required.Add("Library management must be done manually by the programmer through the B4X IDE. Use list_project_libraries or list_available_libraries for reference.");
                     break;
                 case "edit_code":
                     required.Add("Identify the target module file, the Sub to edit, and the new Sub body (newCode).");
@@ -1043,10 +911,7 @@ namespace B4XMcpServer.Tools
                 case "debug_runtime":
                     required.Add("For B4J, confirm the project has been compiled (Objects/<name>.jar exists). For B4A, attach an emulator/device before installing.");
                     break;
-                case "add_library":
-                case "remove_library":
-                    required.Add("Identify the exact library name.");
-                    break;
+
                 case "create_module":
                     required.Add("Choose the new module file path and type (activity/class).");
                     break;

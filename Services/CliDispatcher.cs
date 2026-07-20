@@ -380,8 +380,7 @@ namespace B4XMcpServer.Services
                 // and all the new git_* tools that take a repo path). '--path' is the universal
                 // "where is the project / repo" alias.
                 ["projectPath"] = new[] { "path" },
-                // EnableLibrary / DisableLibrary use 'projectFile' (not 'projectPath'); accept both.
-                ["projectFile"] = new[] { "projectPath", "project" },
+
                 // Library inspection family (LibraryTools).
                 ["libraryName"] = new[] { "library" },
                 ["typeName"]    = new[] { "type" },
